@@ -1,4 +1,4 @@
-# COSMOS: Cross-Modality Self-Distillation for Vision Language Pre-training
+# COSMOS: Cross-Modality Self-Distillation for Vision Language Pre-training [[Arxiv]](https://arxiv.org/abs/2412.01814)
 
 __Authors__: Sanghwan Kim, Rui Xiao, Mariana-Iuliana Georgescu, Stephan Alaniz, Zeynep Akata
 
@@ -7,5 +7,12 @@ Vision-Language Models (VLMs) trained with contrastive loss have achieved signif
 
 ![](assets/framework.png "An overview of COSMOS")
 
-## Code and model
+## Code and model 🔜
 Code and pre-trained models will be released soon. 
+
+## Qualitative Results
+
+We visualize the attention weights of image and text cross-attention modules. Patch-wise (image) and token-wise (caption) attention weights are both normalized between 0 and 1.
+
+![](assets/qualitative_results_supp.png "Qualitative Results")
+
