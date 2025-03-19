@@ -28,33 +28,8 @@ We released the pre-trained COSMOS models on [Huggingface](https://huggingface.c
 | [cosmos_vitb32_merged30m]    | ViT-B/32 | Merged30M                | 64.3         | 48.4         | 89.9           | 76.1           |53.4           |
 | [cosmos_vitb32_pixelprose]   | ViT-B/32 | PixelProse               | 57.2         | 38.9         | 85.6           | 66.3           |54.3           |
 
-## Dependencies
-The following small tutorial helps you set up a simple python virtual environment to run our code. Since our main dependency is [OpenCLIP](https://github.com/mlfoundations/open_clip), which is still updated frequently, you could always check their repo for a detailed tutorial on creating an environment that is best suited for your system. A conda environment is also possible with the same Python and PyTorch version.
-### 1. Create a Virtual Environment
-First, navigate to the project’s root directory `flair/` and create a virtual environment using Python 3.12:
-```bash
-cd flair/
-python3.12 -m venv flair_env
-```
-### 2. Activate and Navigate to src/
-Activate the virtual environment and navigate to `src/`
-```bash
-source flair_env/bin/activate
-cd src/
-```
 
-### 3. Install Dependencies
-Our code mainly involves installing `open_clip_torch` and `open_clip_torch[training]`.
-```bash
-pip install --upgrade pip
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-pip install -r requirements.txt
-```
-
-## Inference Datasets Preparation
-Check to prepare all the inference datasets. For clarity, we provide an example datasets folder with annotation files in `datasets/`. However, all datasets don't have to be stored in the same directory, you could specify them freely by changing the arguments in `src/inference.sh`.
-
-## Training FLAIR
+## Training COSMOS
 In order to train COSMOS from scratch, synthetic long caption datasets should be downloaded from [DreamLIP](https://github.com/ant-research/DreamLIP)'s recaptioned [CC3M-recap](https://huggingface.co/datasets/qidouxiong619/dreamlip_long_captions), [CC12M-recap](https://huggingface.co/datasets/qidouxiong619/dreamlip_long_captions), [YFCC15M-recap](https://huggingface.co/datasets/qidouxiong619/dreamlip_long_captions) and combined(Merged-30M), and [PixelProse](https://huggingface.co/datasets/tomg-group-umd/pixelprose). Notably, COSMOS requires all pre-training dataset to be processed into the [webdataset](https://github.com/webdataset/webdataset) format, to achieve higher I/O efficiency for large-scale training. In the pre-training dataset preparation step, we will take [CC3M-recap](https://huggingface.co/datasets/qidouxiong619/dreamlip_long_captions) as an example to demonstrate how to prepare the pretraining data. The preparation for other datasets should be similar.
 
 
