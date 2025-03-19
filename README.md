@@ -1,4 +1,4 @@
-# COSMOS: Cross-Modality Self-Distillation for Vision Language Pre-training [[Arxiv]](https://arxiv.org/abs/2412.01814)
+# COSMOS: Cross-Modality Self-Distillation for Vision Language Pre-training
 [![Paper](https://img.shields.io/badge/paper-arxiv.2412.03561-B31B1B.svg)](https://arxiv.org/abs/2412.01814)
 [![Hugging Face](https://img.shields.io/badge/HuggingFace-FLAIR-FFD700?logo=huggingface&logoColor=yellow)](https://huggingface.co/sankim2/cosmos)
 
