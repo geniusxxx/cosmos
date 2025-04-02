@@ -344,7 +344,10 @@ class CLIP(nn.Module):
             image_logits += self.logit_bias
         text_logits = image_logits.T
         return image_logits, text_logits
-
+    
+    def get_logit_scale(self):
+        return self.logit_scale.exp()
+    
     def forward(
             self,
             image: Optional[torch.Tensor] = None,
