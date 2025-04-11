@@ -925,7 +925,7 @@ def get_data(args, preprocess_fns, epoch=0, tokenizer=None):
 
     if args.val_data == 'retrieval':
         data["val_coco"] = get_coco_dataset(
-            args, preprocess_val, tokenizer=tokenizer, root_dir=os.path.join(args.data_root_dir, 'coco'))
+            args, preprocess_val, tokenizer=tokenizer, root_dir=os.path.join(args.data_root_dir, 'COCO'))
         data["val_flickr"] = get_flickr_dataset(
             args, preprocess_val, tokenizer=tokenizer, root_dir=os.path.join(args.data_root_dir, 'flickr30k-images'))
     elif args.val_data == 'classification':
@@ -942,7 +942,7 @@ def get_data(args, preprocess_fns, epoch=0, tokenizer=None):
             )
     elif args.val_data == 'coco':
         data["val_coco"] = get_coco_dataset(
-            args, preprocess_val, tokenizer=tokenizer, root_dir=os.path.join(args.data_root_dir, 'coco')) 
+            args, preprocess_val, tokenizer=tokenizer, root_dir=os.path.join(args.data_root_dir, 'COCO')) 
     elif args.val_data == 'flickr':
         data["val_flickr"] = get_flickr_dataset(
             args, preprocess_val, tokenizer=tokenizer, root_dir=os.path.join(args.data_root_dir, 'flickr30k-images'))

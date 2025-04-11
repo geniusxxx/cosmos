@@ -4,6 +4,8 @@ Wraps timm (https://github.com/rwightman/pytorch-image-models) models for use as
 """
 import logging
 from collections import OrderedDict
+import os
+import sys
 
 import torch
 import torch.nn as nn
@@ -24,6 +26,11 @@ except ImportError:
 
 from .utils import freeze_batch_norm_2d
 
+
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+sys.path.append(project_root)
+
+from custom_timm.models.vision_transformer import *
 
 class TimmModel(nn.Module):
     """ timm model adapter
