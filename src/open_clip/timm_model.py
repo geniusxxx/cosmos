@@ -27,10 +27,10 @@ except ImportError:
 from .utils import freeze_batch_norm_2d
 
 
-project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-sys.path.append(project_root)
+# project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+# sys.path.append(project_root)
 
-from custom_timm.models.vision_transformer import *
+# from custom_timm.models.vision_transformer import *
 
 class TimmModel(nn.Module):
     """ timm model adapter

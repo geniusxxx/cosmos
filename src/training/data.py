@@ -237,9 +237,16 @@ def sample_dict(text, k=3, tokenizer=None, sampling_mode='random'):
         captions_list = text['longIB_captions'] + text['longSV_captions'] + text['longLLA_captions']
     elif sampling_mode == 'textcrop':
         assert k >= 2
-        captions_list = text['raw_caption'] + \
-                            text['shortIB_captions'] + text['shortSV_captions'] + text['shortLLA_captions'] + \
-                            text['longIB_captions'] + text['longSV_captions'] + text['longLLA_captions']
+        if 'title_clean' in text and 'raw_caption' not in text: 
+            captions_list = split_caption(text['title_clean']) + split_caption(text['description_clean'])
+        elif 'caption' in text and 'raw_caption' not in text:
+            captions_list = split_caption(text['caption'])
+        elif 'raw_text' in text and 'raw_caption' not in text:
+            captions_list = text['raw_text'] + text['syn_text']
+        else:
+            captions_list = text['raw_caption'] + \
+                                text['shortIB_captions'] + text['shortSV_captions'] + text['shortLLA_captions'] + \
+                                text['longIB_captions'] + text['longSV_captions'] + text['longLLA_captions']
         global_nums = [random.randint(1, 5) for _ in range(2) ] # choose the number of sentences (1~5) for 2 global captions
         global_captions = ['. '.join(random_sample_from_list(captions_list, num)) for num in global_nums]
         local_captions = random_sample_from_list(captions_list, k-2)
@@ -925,7 +932,7 @@ def get_data(args, preprocess_fns, epoch=0, tokenizer=None):
 
     if args.val_data == 'retrieval':
         data["val_coco"] = get_coco_dataset(
-            args, preprocess_val, tokenizer=tokenizer, root_dir=os.path.join(args.data_root_dir, 'COCO'))
+            args, preprocess_val, tokenizer=tokenizer, root_dir=os.path.join(args.data_root_dir, 'coco'))
         data["val_flickr"] = get_flickr_dataset(
             args, preprocess_val, tokenizer=tokenizer, root_dir=os.path.join(args.data_root_dir, 'flickr30k-images'))
     elif args.val_data == 'classification':
@@ -942,7 +949,7 @@ def get_data(args, preprocess_fns, epoch=0, tokenizer=None):
             )
     elif args.val_data == 'coco':
         data["val_coco"] = get_coco_dataset(
-            args, preprocess_val, tokenizer=tokenizer, root_dir=os.path.join(args.data_root_dir, 'COCO')) 
+            args, preprocess_val, tokenizer=tokenizer, root_dir=os.path.join(args.data_root_dir, 'coco')) 
     elif args.val_data == 'flickr':
         data["val_flickr"] = get_flickr_dataset(
             args, preprocess_val, tokenizer=tokenizer, root_dir=os.path.join(args.data_root_dir, 'flickr30k-images'))
