@@ -4,3 +4,4 @@ logs/
 
 pretrained/
 
+*.sh
