@@ -386,7 +386,7 @@ def parse_args(args):
     parser.add_argument(
         "--wandb-entity-name",
         type=str,
-        default='NextVLM',
+        default='geniusxby',
         help="Name of the entity if logging with wandb.",
     )
     parser.add_argument(

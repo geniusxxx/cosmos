@@ -237,11 +237,11 @@ def sample_dict(text, k=3, tokenizer=None, sampling_mode='random'):
         captions_list = text['longIB_captions'] + text['longSV_captions'] + text['longLLA_captions']
     elif sampling_mode == 'textcrop':
         assert k >= 2
-        if 'title_clean' in text and 'raw_caption' not in text: 
-            captions_list = split_caption(text['title_clean']) + split_caption(text['description_clean'])
-        elif 'caption' in text and 'raw_caption' not in text:
-            captions_list = split_caption(text['caption'])
-        elif 'raw_text' in text and 'raw_caption' not in text:
+        # if 'title_clean' in text and 'raw_caption' not in text: 
+        #     captions_list = split_caption(text['title_clean']) + split_caption(text['description_clean'])
+        # elif 'caption' in text and 'raw_caption' not in text:
+        #     captions_list = split_caption(text['caption'])
+        if 'raw_text' in text and 'raw_caption' not in text:
             captions_list = text['raw_text'] + text['syn_text']
         else:
             captions_list = text['raw_caption'] + \

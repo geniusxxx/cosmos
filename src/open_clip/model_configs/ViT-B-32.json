@@ -1,5 +1,6 @@
 {
     "embed_dim": 512,
+    "init_logit_bias": -10,
     "vision_cfg": {
         "image_size": 224,
         "layers": 12,

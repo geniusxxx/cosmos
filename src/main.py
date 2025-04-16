@@ -246,9 +246,12 @@ def main(args):
     if args.siglip:
         model_kwargs['init_logit_scale'] = np.log(10)  # different from CLIP
         model_kwargs['init_logit_bias'] = -10
+
+    original_pretrained = args.pretrained
+    args.pretrained = None
     student, preprocess_train, preprocess_val = create_model_and_transforms(
         args.model,
-        args.pretrained,
+        None,
         precision=args.precision,
         device=device,
         jit=args.torchscript,
@@ -278,6 +281,26 @@ def main(args):
     # teacher and student start with the same weights
     import copy
     teacher = copy.deepcopy(student)
+
+    # 手动加载COSMOS格式权重
+    if original_pretrained:
+        checkpoint = pt_load(original_pretrained, map_location='cpu')
+        if "student" in checkpoint and "teacher" in checkpoint:
+            sd_student = checkpoint["student"]
+            sd_teacher = checkpoint["teacher"]
+            
+            # 处理带有module.前缀的权重
+            if not args.distributed and next(iter(sd_student.items()))[0].startswith('module'):
+                sd_student = {k[len('module.'):]: v for k, v in sd_student.items()}
+            if not args.distributed and next(iter(sd_teacher.items()))[0].startswith('module'):
+                sd_teacher = {k[len('module.'):]: v for k, v in sd_teacher.items()}
+                
+            student.load_state_dict(sd_student, strict=False)
+            teacher.load_state_dict(sd_teacher, strict=False)
+            logging.info(f"Loaded COSMOS format weights from {original_pretrained}")
+        else:
+            logging.info(f"No COSMOS format weights found in {original_pretrained}")
+
     if args.init_last_layer:
         student.init_parameters_last_transformer_layer()
         teacher.init_parameters_last_transformer_layer()
@@ -491,7 +514,6 @@ def main(args):
             wand_resume = None
             wand_name = args.name
         wandb.init(
-            entity=args.wandb_entity_name,
             project=args.wandb_project_name,
             name=wand_name,
             id=args.name,
