@@ -151,27 +151,31 @@ class COSMOSLoss(nn.Module):
             rank=0,
             world_size=1,
             use_horovod=False,
-            bidir=True,
     ):
         super().__init__()
+        self.local_loss = local_loss
+        self.gather_with_grad = gather_with_grad
         self.cache_labels = cache_labels
         self.rank = rank
         self.world_size = world_size
         self.use_horovod = use_horovod
-        self.bidir = bidir
 
-        # 使用SigLipLoss替代ClipLoss
-        self.clip_loss = SigLipLoss(
+        # cache state
+        self.prev_num_logits = 0
+        self.labels = {}
+
+        self.clip_loss = ClipLoss(
+                                local_loss=self.local_loss,
+                                gather_with_grad=self.gather_with_grad,
                                 cache_labels=self.cache_labels,
                                 rank=self.rank,
                                 world_size=self.world_size,
-                                bidir=self.bidir,
                                 use_horovod=self.use_horovod,
                                 )
 
-    def forward(self, s_image_features, s_text_features, logit_scale,
-                t_image_features=None, t_text_features=None, output_dict=False, distill_logit_scale=None,
-                s_img_crossmodal_features=None, s_txt_crossmodal_features=None, logit_bias=None):
+    def forward(self, s_image_features, s_text_features, logit_scale,\
+                t_image_features=None, t_text_features=None, output_dict=False, distill_logit_scale = None,\
+                s_img_crossmodal_features=None, s_txt_crossmodal_features=None):
         if not isinstance(s_image_features, (list, tuple)): # There can be multiple images from augmentation
             s_image_features = [s_image_features] 
         if not isinstance(s_text_features, (list, tuple)): # There can be multiple text from augmentation
@@ -186,46 +190,21 @@ class COSMOSLoss(nn.Module):
             # no gradient flows to teacher
             t_text_features = [txt_feat.detach() for txt_feat in t_text_features] 
 
-        # COSMOS Loss - 四方向蒸馏
+        # COSMOS Loss
+        # total (2 global + n local) * 2 global loss terms
         cosmos_loss = 0
         scale = distill_logit_scale if distill_logit_scale is not None else logit_scale
-        
-        # 分别处理四个蒸馏方向
-        cosmos_loss += self.clip_loss(s_img_crossmodal_features, t_image_features[0], scale, logit_bias) 
-        cosmos_loss += self.clip_loss(s_img_crossmodal_features, t_text_features[0], scale, logit_bias) 
-        cosmos_loss += self.clip_loss(s_txt_crossmodal_features, t_image_features[0], scale, logit_bias)
-        cosmos_loss += self.clip_loss(s_txt_crossmodal_features, t_text_features[0], scale, logit_bias)
-        
-        # 如果teacher有第二个视图，也处理它
-        if len(t_image_features) > 1:
-            cosmos_loss += self.clip_loss(s_img_crossmodal_features, t_image_features[1], scale, logit_bias)
-            cosmos_loss += self.clip_loss(s_txt_crossmodal_features, t_image_features[1], scale, logit_bias)
-        
-        if len(t_text_features) > 1:
-            cosmos_loss += self.clip_loss(s_img_crossmodal_features, t_text_features[1], scale, logit_bias)
-            cosmos_loss += self.clip_loss(s_txt_crossmodal_features, t_text_features[1], scale, logit_bias)
-        
-        # 计算平均值
-        total_directions = 4
-        if len(t_image_features) > 1:
-            total_directions += 2
-        if len(t_text_features) > 1:
-            total_directions += 2
-        cosmos_loss /= total_directions
+        cosmos_loss += self.clip_loss(s_img_crossmodal_features, t_image_features, scale) 
+        cosmos_loss += self.clip_loss(s_img_crossmodal_features, t_text_features, scale) 
+        cosmos_loss += self.clip_loss(s_txt_crossmodal_features, t_image_features, scale)
+        cosmos_loss += self.clip_loss(s_txt_crossmodal_features, t_text_features, scale)
+        cosmos_loss /= 4
 
-        # CLIP Loss - 只使用全局视图
-        # SigLip一次只能处理一个视图，所以需要分别处理每个全局视图
-        clip_loss = 0
-        # 使用前两个全局视图（如果有）
-        global_views = min(2, len(s_image_features))
-        for i in range(global_views):
-            for text_feat in s_text_features:
-                clip_loss += self.clip_loss(s_image_features[i], text_feat, logit_scale, logit_bias)
-        
-        # 计算平均值
-        clip_loss /= (global_views * len(s_text_features))
-        
-        return {"distill_loss": cosmos_loss, "siglip_loss": clip_loss} if output_dict else cosmos_loss + clip_loss
+        # CLIP Loss
+        # total 2 global* (2 global + n local) loss terms
+        # not include localcrop of img in CLIPloss. It results in overfitting.
+        clip_loss = self.clip_loss(s_image_features[:2], s_text_features, logit_scale) 
+        return {"distill_loss": cosmos_loss, "clip_loss": clip_loss} if output_dict else cosmos_loss + clip_loss
 
 
 class CoCaLoss(ClipLoss):

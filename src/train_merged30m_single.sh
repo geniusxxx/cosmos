@@ -23,7 +23,7 @@ python -m main \
     --train-num-samples 37794565 \
     --val-data 'coco' \
     --data-root-dir /mnt/shared_38/data/xuboyu/datasets \
-    --batch-size 192 \
+    --batch-size 64 \
     --precision amp_bf16 \
     --workers 0 \
     --save-frequency 1 \
@@ -46,4 +46,5 @@ python -m main \
     --report-to wandb \
     --wandb-project-name cosmos-vitb32-merged28m-datacompdr12m \
     --grad-checkpointing \
+    --accum-freq 8 \
     # --torchcompile

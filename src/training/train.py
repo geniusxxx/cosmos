@@ -81,8 +81,13 @@ def train_one_epoch(student, teacher, data, loss, epoch, optimizer, scaler, sche
     num_batches_per_epoch = dataloader.num_batches // args.accum_freq
     sample_digits = math.ceil(math.log(dataloader.num_samples + 1, 10))
 
+    # 初始化梯度范数计量器
+    grad_norm_m = AverageMeter()
+    
+    # 梯度累积所需的缓存容器
     if args.accum_freq > 1:
-        accum_images, accum_texts, accum_features = [], [], {}
+        accum_images, accum_texts = [], []
+        accum_s_features, accum_t_features = {}, {}
 
     use_img_aug = args.use_imagecrop_aug
     use_txt_aug = args.num_sampled_captions > 0
@@ -96,7 +101,9 @@ def train_one_epoch(student, teacher, data, loss, epoch, optimizer, scaler, sche
         step = num_batches_per_epoch * epoch + i_accum
 
         if not args.skip_scheduler:
-            scheduler(step)
+            # 只在累积开始时更新学习率
+            if i % args.accum_freq == 0:
+                scheduler(step)
 
         images, texts = batch
 
@@ -128,36 +135,40 @@ def train_one_epoch(student, teacher, data, loss, epoch, optimizer, scaler, sche
         texts = texts.to(device=device, non_blocking=True)
 
         data_time_m.update(time.time() - end)
-        optimizer.zero_grad()
+        
+        # 只在累积开始时清空梯度
+        if i % args.accum_freq == 0:
+            optimizer.zero_grad()
 
-        assert args.accum_freq == 1
         if args.accum_freq == 1:
+            # 单步模式下的标准前向传播
             with autocast():
                 s_model_out = student(images, texts, batch_size)
                 logit_scale = s_model_out['logit_scale']
-                distill_logit_scale = s_model_out['distill_logit_scale'] if 'distill_logit_scale'in s_model_out else None
+                distill_logit_scale = s_model_out['distill_logit_scale'] if 'distill_logit_scale' in s_model_out else None
 
+                # 为教师模型准备输入
                 if use_img_aug:
-                    images = torch.cat(images[:2])
+                    t_images = torch.cat(images[:2])
                 else:
-                    images = None
+                    t_images = None
 
                 if use_txt_aug:
-                    texts = texts[:batch_size*2] # (B*2, 77)
+                    t_texts = texts[:batch_size*2] # (B*2, 77)
                 else:
-                    texts = None
-  
-                t_model_out = teacher(images, texts)
-
-                model_out = {
-                    'logit_scale': logit_scale,
-                }
+                    t_texts = None
+                
+                # 教师模型前向传播
+                t_model_out = teacher(t_images, t_texts)
+                
+                # 构建模型输出
+                model_out = {'logit_scale': logit_scale}
                 if distill_logit_scale is not None:
                     model_out['distill_logit_scale'] = distill_logit_scale
                 if 'logit_bias' in s_model_out:
                     model_out['logit_bias'] = s_model_out['logit_bias']
 
-                # image features
+                # 处理图像特征
                 if args.cosmos:   
                     model_out['s_image_features'] = s_model_out['image_features'].chunk(num_images)
                     model_out['t_image_features'] = t_model_out['image_features'].chunk(2)
@@ -165,7 +176,7 @@ def train_one_epoch(student, teacher, data, loss, epoch, optimizer, scaler, sche
                 else:
                     model_out['s_image_features'] = s_model_out['image_features']
 
-                # text features
+                # 处理文本特征
                 if args.cosmos:
                     model_out['s_text_features'] = s_model_out['text_features'].chunk(num_texts)
                     model_out['t_text_features'] = t_model_out['text_features'].chunk(2)  
@@ -173,56 +184,203 @@ def train_one_epoch(student, teacher, data, loss, epoch, optimizer, scaler, sche
                 else:
                     model_out['s_text_features'] = s_model_out['text_features']
 
+                # 计算损失
                 losses = loss(**model_out, output_dict=True)
                 total_loss = sum(losses.values())
                 losses["loss"] = total_loss
 
+            # 反向传播
             backward(total_loss, scaler)
         else:
-            # TODO implement this
-            pass
+            # 梯度累积模式
+            # 第一阶段：无梯度缓存特征
+            with torch.no_grad():
+                with autocast():
+                    # 学生模型前向传播
+                    s_model_out = student(images, texts, batch_size)
+                    
+                    # 准备教师模型输入
+                    if use_img_aug:
+                        t_images = torch.cat(images[:2])
+                    else:
+                        t_images = None
 
-        # EMA update for the teacher
-        if args.fix_momentum:
-            momentum = args.momentum_teacher
-        else:
-            momentum = momentum_scheduler(step)  # momentum parameter
-        with torch.no_grad():
-            for param_q, param_k in zip(student.parameters(), teacher.parameters()):
-                param_k.data.mul_(momentum).add_(
-                    (1 - momentum) * param_q.detach().data)
+                    if use_txt_aug:
+                        t_texts = texts[:batch_size*2]
+                    else:
+                        t_texts = None
+                    
+                    # 教师模型前向传播（只在第一个累积步骤执行）
+                    if i % args.accum_freq == 0:
+                        t_model_out = teacher(t_images, t_texts)
+                        
+                        # 缓存教师特征
+                        if args.cosmos:
+                            t_features = {}
+                            t_features['image_features'] = t_model_out['image_features'].chunk(2)
+                            t_features['text_features'] = t_model_out['text_features'].chunk(2)
+                            accum_t_features = t_features
+                    
+                    # 缓存学生特征
+                    s_features = {}
+                    # 移除不需要累积的标量值
+                    for f in ("logit_scale", "distill_logit_scale", "logit_bias"):
+                        s_model_out.pop(f, None)
+                    
+                    # 处理需要分块的特征
+                    if args.cosmos:
+                        s_features['image_features'] = s_model_out['image_features'].chunk(num_images)
+                        s_features['img_crossmodal_features'] = s_model_out['img_crossmodal_features'].chunk(num_images)
+                        s_features['text_features'] = s_model_out['text_features'].chunk(num_texts)
+                        s_features['txt_crossmodal_features'] = s_model_out['txt_crossmodal_features'].chunk(num_texts)
+                    else:
+                        s_features['image_features'] = s_model_out['image_features']
+                        s_features['text_features'] = s_model_out['text_features']
+                    
+                    # 添加到累积容器
+                    if 's_features' not in accum_s_features:
+                        accum_s_features[i % args.accum_freq] = s_features
+                    else:
+                        accum_s_features[i % args.accum_freq] = s_features
 
-        if scaler is not None:
-            if args.horovod:
-                optimizer.synchronize()
-                scaler.unscale_(optimizer)
-                if args.grad_clip_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(
-                        student.parameters(), args.grad_clip_norm, norm_type=2.0)
-                    torch.nn.utils.clip_grad_norm_(
-                        teacher.parameters(), args.grad_clip_norm, norm_type=2.0)
-                with optimizer.skip_synchronize():
+                # 缓存输入
+                accum_images.append(images)
+                accum_texts.append(texts)
+            
+            # 如果不是累积周期最后一步，继续下一批次
+            if (i + 1) % args.accum_freq > 0:
+                continue
+                
+            # 第二阶段：对累积的批次重新计算梯度
+            for j in range(args.accum_freq):
+                current_images = accum_images[j]
+                current_texts = accum_texts[j]
+                
+                with autocast():
+                    # 重新计算当前批次特征
+                    s_model_out = student(current_images, current_texts, batch_size)
+                    logit_scale = s_model_out['logit_scale']
+                    distill_logit_scale = s_model_out['distill_logit_scale'] if 'distill_logit_scale' in s_model_out else None
+                    
+                    # 构建不参与累积的标量参数
+                    inputs_no_accum = {'logit_scale': logit_scale}
+                    if distill_logit_scale is not None:
+                        inputs_no_accum['distill_logit_scale'] = distill_logit_scale
+                    if 'logit_bias' in s_model_out:
+                        inputs_no_accum['logit_bias'] = s_model_out['logit_bias']
+                    
+                    # 构建模型输出，合并当前批次和缓存批次的特征
+                    model_out = {}
+                    
+                    # 处理学生特征
+                    if args.cosmos:
+                        # 当前批次特征
+                        current_s_img_features = s_model_out['image_features'].chunk(num_images)
+                        current_s_img_cross_features = s_model_out['img_crossmodal_features'].chunk(num_images)
+                        current_s_txt_features = s_model_out['text_features'].chunk(num_texts)
+                        current_s_txt_cross_features = s_model_out['txt_crossmodal_features'].chunk(num_texts)
+                        
+                        # 准备拼接学生特征
+                        s_img_features_list = []
+                        s_img_cross_features_list = []
+                        s_txt_features_list = []
+                        s_txt_cross_features_list = []
+                        
+                        # 拼接所有批次的特征（当前批次 + 缓存批次）
+                        for k in range(args.accum_freq):
+                            if k == j:  # 使用当前批次的重计算特征
+                                s_img_features_list.extend(current_s_img_features)
+                                s_img_cross_features_list.extend(current_s_img_cross_features)
+                                s_txt_features_list.extend(current_s_txt_features)
+                                s_txt_cross_features_list.extend(current_s_txt_cross_features)
+                            else:  # 使用缓存的无梯度特征
+                                s_img_features_list.extend(accum_s_features[k]['image_features'])
+                                s_img_cross_features_list.extend(accum_s_features[k]['img_crossmodal_features'])
+                                s_txt_features_list.extend(accum_s_features[k]['text_features'])
+                                s_txt_cross_features_list.extend(accum_s_features[k]['txt_crossmodal_features'])
+                        
+                        # 将拼接的特征添加到模型输出
+                        model_out['s_image_features'] = s_img_features_list
+                        model_out['s_img_crossmodal_features'] = s_img_cross_features_list
+                        model_out['s_text_features'] = s_txt_features_list
+                        model_out['s_txt_crossmodal_features'] = s_txt_cross_features_list
+                        
+                        # 使用第一批次缓存的教师特征
+                        model_out['t_image_features'] = accum_t_features['image_features']
+                        model_out['t_text_features'] = accum_t_features['text_features']
+                    else:
+                        # 非COSMOS模型更简单的特征处理
+                        model_out['s_image_features'] = s_model_out['image_features']
+                        model_out['s_text_features'] = s_model_out['text_features']
+                    
+                    # 将不参与累积的标量添加到模型输出
+                    model_out.update(inputs_no_accum)
+                    
+                    # 计算损失
+                    losses = loss(**model_out, output_dict=True)
+                    
+                    # 缩放损失以适应累积频率
+                    total_loss = sum(losses.values()) / args.accum_freq
+                    losses = {k: v / args.accum_freq for k, v in losses.items()}
+                    losses["loss"] = total_loss
+                
+                # 反向传播
+                backward(total_loss, scaler)
+        
+        # 计算梯度范数
+        grad_norm = 0.0
+        for p in student.parameters():
+            if p.grad is not None:
+                grad_norm += p.grad.data.norm(2).item() ** 2
+        grad_norm = grad_norm ** 0.5
+        grad_norm_m.update(grad_norm)
+
+        # 仅在最后一个累积步骤或单步模式下执行优化器步骤和EMA更新
+        if (i + 1) % args.accum_freq == 0 or args.accum_freq == 1:
+            # 执行EMA更新
+            if args.fix_momentum:
+                momentum = args.momentum_teacher
+            else:
+                momentum = momentum_scheduler(step)
+            
+            with torch.no_grad():
+                for param_q, param_k in zip(student.parameters(), teacher.parameters()):
+                    param_k.data.mul_(momentum).add_(
+                        (1 - momentum) * param_q.detach().data)
+
+            # 执行优化器步骤
+            if scaler is not None:
+                if args.horovod:
+                    optimizer.synchronize()
+                    scaler.unscale_(optimizer)
+                    if args.grad_clip_norm is not None:
+                        torch.nn.utils.clip_grad_norm_(
+                            student.parameters(), args.grad_clip_norm, norm_type=2.0)
+                        torch.nn.utils.clip_grad_norm_(
+                            teacher.parameters(), args.grad_clip_norm, norm_type=2.0)
+                    with optimizer.skip_synchronize():
+                        scaler.step(optimizer)
+                else:
+                    if args.grad_clip_norm is not None:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(
+                            student.parameters(), args.grad_clip_norm, norm_type=2.0)
+                        torch.nn.utils.clip_grad_norm_(
+                            teacher.parameters(), args.grad_clip_norm, norm_type=2.0)
                     scaler.step(optimizer)
+                scaler.update()
             else:
                 if args.grad_clip_norm is not None:
-                    scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(
                         student.parameters(), args.grad_clip_norm, norm_type=2.0)
                     torch.nn.utils.clip_grad_norm_(
                         teacher.parameters(), args.grad_clip_norm, norm_type=2.0)
-                scaler.step(optimizer)
-            scaler.update()
-        else:
-            if args.grad_clip_norm is not None:
-                torch.nn.utils.clip_grad_norm_(
-                    student.parameters(), args.grad_clip_norm, norm_type=2.0)
-                torch.nn.utils.clip_grad_norm_(
-                    teacher.parameters(), args.grad_clip_norm, norm_type=2.0)
-            optimizer.step()
-
-        # reset gradient accum, if enabled
-        if args.accum_freq > 1:
-            accum_images, accum_texts, accum_features = [], [], {}
+                optimizer.step()
+            
+            # 重置累积容器
+            if args.accum_freq > 1:
+                accum_images, accum_texts = [], []
+                accum_s_features, accum_t_features = {}, {}
 
         # Note: we clamp to 4.6052 = ln(100), as in the original paper.
         with torch.no_grad():
@@ -234,8 +392,10 @@ def train_one_epoch(student, teacher, data, loss, epoch, optimizer, scaler, sche
 
         batch_time_m.update(time.time() - end)
         end = time.time()
+        
+        # 只在累积周期结束时或单步模式下记录日志
         batch_count = i_accum + 1
-        if is_master(args) and (i_accum % args.log_every_n_steps == 0 or batch_count == num_batches_per_epoch):
+        if is_master(args) and ((i + 1) % args.accum_freq == 0 or args.accum_freq == 1) and (i_accum % args.log_every_n_steps == 0 or batch_count == num_batches_per_epoch):
             num_samples = batch_count * batch_size * args.accum_freq * args.world_size
             samples_per_epoch = dataloader.num_samples
             percent_complete = 100.0 * batch_count / num_batches_per_epoch
@@ -266,7 +426,8 @@ def train_one_epoch(student, teacher, data, loss, epoch, optimizer, scaler, sche
                     f"LR: {optimizer.param_groups[0]['lr']:5f} "
                     f"Momentum: {momentum:5f} "
                     f"Logit Scale: {math.log(logit_scale_scalar):.3f} " 
-                    f"Distill Logit Scale: {math.log(distill_logit_scale_scalar):.3f} " + loss_log
+                    f"Distill Logit Scale: {math.log(distill_logit_scale_scalar):.3f} "
+                    f"Grad Norm: {grad_norm_m.val:.5f} " + loss_log
                 )
             else:
                 logging.info(
@@ -275,7 +436,8 @@ def train_one_epoch(student, teacher, data, loss, epoch, optimizer, scaler, sche
                     f"Batch (t): {batch_time_m.avg:.3f}, {samples_per_second:#g}/s, {samples_per_second_per_gpu:#g}/s/gpu "
                     f"LR: {optimizer.param_groups[0]['lr']:5f} "
                     f"Momentum: {momentum:5f} "
-                    f"Logit Scale: {math.log(logit_scale_scalar):.3f} "  + loss_log
+                    f"Logit Scale: {math.log(logit_scale_scalar):.3f} "
+                    f"Grad Norm: {grad_norm_m.val:.5f} " + loss_log
                 )
             # Save train loss / etc. Using non avg meter values as loggers have their own smoothing
             log_data = {
@@ -285,7 +447,8 @@ def train_one_epoch(student, teacher, data, loss, epoch, optimizer, scaler, sche
                 "samples_per_second_per_gpu": samples_per_second_per_gpu,
                 "scale": math.log(logit_scale_scalar),
                 "lr": optimizer.param_groups[0]["lr"],
-                "momentum": momentum
+                "momentum": momentum,
+                "grad_norm": grad_norm_m.val
             }
             if distill_logit_scale is not None:
                 log_data['distil_scale'] = math.log(distill_logit_scale_scalar)
@@ -305,6 +468,7 @@ def train_one_epoch(student, teacher, data, loss, epoch, optimizer, scaler, sche
             # resetting batch / data time meters per log window
             batch_time_m.reset()
             data_time_m.reset()
+            grad_norm_m.reset()
     # end for
 
 

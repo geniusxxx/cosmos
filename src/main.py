@@ -295,8 +295,8 @@ def main(args):
             if not args.distributed and next(iter(sd_teacher.items()))[0].startswith('module'):
                 sd_teacher = {k[len('module.'):]: v for k, v in sd_teacher.items()}
                 
-            student.load_state_dict(sd_student, strict=False)
-            teacher.load_state_dict(sd_teacher, strict=False)
+            student.load_state_dict(sd_student)
+            teacher.load_state_dict(sd_teacher)
             logging.info(f"Loaded COSMOS format weights from {original_pretrained}")
         else:
             logging.info(f"No COSMOS format weights found in {original_pretrained}")
