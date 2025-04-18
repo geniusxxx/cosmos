@@ -878,9 +878,11 @@ class TextTransformer(nn.Module):
             else:
                 nn.init.normal_(self.text_projection, std=self.transformer.width ** -0.5)
 
-    def lock(self, unlocked_groups=0, freeze_bn_stats=False):
-        for param in self.parameters():
-            param.requires_grad = False
+    # def lock(self, unlocked_groups=0, freeze_bn_stats=False):
+    #     # 冻结除attn_cross_pool外的所有参数
+    #     for name, param in self.named_parameters():
+    #         if 'attn_cross_pool' not in name:
+    #             param.requires_grad = False
 
     @torch.jit.ignore
     def set_grad_checkpointing(self, enable=True):
@@ -935,7 +937,7 @@ class TextTransformer(nn.Module):
                 pooled = pooled @ self.text_projection
 
         if self.output_all:
-            return tokens, pooled     
+            return pooled, tokens   
         else:
             return pooled
 

@@ -40,6 +40,15 @@ from training.file_utils import pt_load, check_exists, start_sync_process, remot
 
 import warnings
 
+# import debugpy
+# try:
+#     # 5678 is the default attach port in the VS Code debug configurations. Unless a host and port are specified, host defaults to 127.0.0.1
+#     debugpy.listen(("localhost", 5678))
+#     print("Waiting for debugger attach")
+#     debugpy.wait_for_client()
+# except Exception as e:
+#     pass
+
 LATEST_CHECKPOINT_NAME = "epoch_latest.pt"
 
 
@@ -299,11 +308,24 @@ def main(args):
             teacher.load_state_dict(sd_teacher)
             logging.info(f"Loaded COSMOS format weights from {original_pretrained}")
         else:
+            # 加载常规MobileCLIP权重，只更新匹配的部分
             logging.info(f"No COSMOS format weights found in {original_pretrained}")
+            model_dict = student.state_dict()
+            pretrained_dict = {k: v for k, v in checkpoint.items() if k in model_dict}
+            model_dict.update(pretrained_dict)
+            student.load_state_dict(model_dict)
+            
+            # 同样更新教师模型
+            teacher.load_state_dict(model_dict)
+            logging.info(f"Loaded standard pretrained weights to base model parts, from {original_pretrained}")
 
     if args.init_last_layer:
         student.init_parameters_last_transformer_layer()
         teacher.init_parameters_last_transformer_layer()
+
+    # if args.lock:
+    #     logging.info("冻结学生模型中除COSMOS相关部分外的所有参数")
+    #     student.freeze_except_cosmos_parts()
 
     # there is no backpropagation through the teacher, so no need for gradients
     for p in teacher.parameters():

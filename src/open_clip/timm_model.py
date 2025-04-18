@@ -27,10 +27,10 @@ except ImportError:
 from .utils import freeze_batch_norm_2d
 
 
-# project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-# sys.path.append(project_root)
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+sys.path.append(project_root)
 
-# from custom_timm.models.vision_transformer import *
+from custom_timm.models.fastvit import *
 
 class TimmModel(nn.Module):
     """ timm model adapter
@@ -113,6 +113,8 @@ class TimmModel(nn.Module):
             head_layers['mlp'] = Mlp(prev_chs, 2 * embed_dim, embed_dim, drop=(drop, 0), bias=(True, proj_bias))
 
         self.head = nn.Sequential(head_layers)
+        if hasattr(self.trunk, 'attn_cross_pool'):
+            self.attn_cross_pool = self.trunk.attn_cross_pool
 
     def lock(self, unlocked_groups=0, freeze_bn_stats=False):
         """ lock modules
@@ -120,9 +122,10 @@ class TimmModel(nn.Module):
             unlocked_groups (int): leave last n layer groups unlocked (default: 0)
         """
         if not unlocked_groups:
-            # lock full model
-            for param in self.trunk.parameters():
-                param.requires_grad = False
+            # lock full model except attn_cross_pool
+            for name, param in self.named_parameters():
+                if 'attn_cross_pool' not in name:
+                    param.requires_grad = False
             if freeze_bn_stats:
                 freeze_batch_norm_2d(self.trunk)
         else:

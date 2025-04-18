@@ -432,6 +432,12 @@ def parse_args(args):
         "--grad-clip-norm", type=float, default=None, help="Gradient clip."
     )
     parser.add_argument(
+        "--lock",
+        default=False,
+        action='store_true',
+        help="Lock all parameters by disabling gradients.",
+    )
+    parser.add_argument(
         "--lock-text",
         default=False,
         action='store_true',

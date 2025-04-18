@@ -291,7 +291,7 @@ def create_model(
             if "multimodal_cfg" in model_cfg:
                 model = CoCa(**model_cfg, cast_dtype=cast_dtype)
             else:
-                model = CustomTextCLIP(**model_cfg, cast_dtype=cast_dtype)
+                model = CustomTextCLIP(**model_cfg, cast_dtype=cast_dtype, cosmos=cosmos)
         else:
             model = CLIP(**model_cfg, cast_dtype=cast_dtype, cosmos=cosmos)
 

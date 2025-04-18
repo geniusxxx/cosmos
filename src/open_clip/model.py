@@ -119,7 +119,7 @@ def _build_vision_tower(
         embed_dim: int,
         vision_cfg: CLIPVisionCfg,
         quick_gelu: bool = False,
-        cast_dtype: Optional[torch.dtype] = None
+        cast_dtype: Optional[torch.dtype] = None,
 ):
     if isinstance(vision_cfg, dict):
         vision_cfg = CLIPVisionCfg(**vision_cfg)
@@ -295,6 +295,43 @@ class CLIP(nn.Module):
         self.visual.lock(unlocked_groups=unlocked_groups,
                          freeze_bn_stats=freeze_bn_stats)
 
+    def freeze_except_cosmos_parts(self):
+        """冻结除CrossAttn、token_mapping和logit_scale外的所有参数"""
+        # 首先冻结所有参数
+        for param in self.parameters():
+            param.requires_grad = False
+        
+        # 解冻CrossAttn模块
+        if hasattr(self.visual, 'attn_cross_pool') and self.visual.attn_cross_pool is not None:
+            for param in self.visual.attn_cross_pool.parameters():
+                param.requires_grad = True
+        
+        if hasattr(self, 'text_attn_cross_pool') and self.text_attn_cross_pool is not None:
+            for param in self.text_attn_cross_pool.parameters():
+                param.requires_grad = True
+        
+        # 解冻token_mapping模块
+        if self.image_token_mapping is not None:
+            for param in self.image_token_mapping.parameters():
+                param.requires_grad = True
+        
+        if self.output_all and hasattr(self, 'text_token_mapping'):
+            for param in self.text_token_mapping.parameters():
+                param.requires_grad = True
+        
+        # 解冻logit_scale和distill_logit_scale
+        if hasattr(self, 'logit_scale'):
+            self.logit_scale.requires_grad = True
+        
+        if hasattr(self, 'distill_logit_scale') and self.distill_logit_scale is not None:
+            self.distill_logit_scale.requires_grad = True
+        
+        # 打印可训练参数统计
+        total_params = sum(p.numel() for p in self.parameters())
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        print(f"总参数: {total_params:,}")
+        print(f"可训练参数: {trainable_params:,} ({trainable_params/total_params*100:.2f}%)")
+
     @torch.jit.ignore
     def set_grad_checkpointing(self, enable=True):
         self.visual.set_grad_checkpointing(enable)
@@ -453,6 +490,7 @@ class CustomTextCLIP(nn.Module):
             init_logit_bias: Optional[float] = None,
             cast_dtype: Optional[torch.dtype] = None,
             output_dict: bool = False,
+            cosmos: bool = False,
     ):
         super().__init__()
         self.output_dict = output_dict
@@ -463,10 +501,22 @@ class CustomTextCLIP(nn.Module):
         self.context_length = self.text.context_length
         self.vocab_size = self.text.vocab_size
         self.logit_scale = nn.Parameter(torch.ones([]) * init_logit_scale)
+        self.distill_logit_scale = nn.Parameter(torch.ones([]) * init_logit_scale) if cosmos else None
+        
         if init_logit_bias is not None:
             self.logit_bias = nn.Parameter(torch.ones([]) * init_logit_bias)
         else:
             self.logit_bias = None
+        
+        # COSMOS特定参数
+        self.cosmos = cosmos
+        self.image_token_mapping = None
+        self.text_token_mapping = None
+        self.output_all = vision_cfg['output_all']
+        assert vision_cfg['output_all'] == text_cfg['output_all']
+        if self.output_all:
+            self.image_token_mapping = nn.Linear(1280, embed_dim)
+            self.text_token_mapping = nn.Linear(text_cfg['width'], embed_dim)
 
     def lock_image_tower(self, unlocked_groups=0, freeze_bn_stats=False):
         # lock image tower as per LiT - https://arxiv.org/abs/2111.07991
@@ -476,22 +526,75 @@ class CustomTextCLIP(nn.Module):
     def lock_text_tower(self, unlocked_layers: int = 0, freeze_layer_norm: bool = True):
         self.text.lock(unlocked_layers, freeze_layer_norm)
 
+    # def freeze_except_cosmos_parts(self):
+    #     """冻结除CrossAttn、token_mapping和logit_scale外的所有参数"""
+    #     # 首先冻结所有参数
+    #     for param in self.parameters():
+    #         param.requires_grad = False
+        
+    #     # 解冻CrossAttn模块
+    #     if hasattr(self.visual, 'attn_cross_pool') and self.visual.attn_cross_pool is not None:
+    #         for param in self.visual.attn_cross_pool.parameters():
+    #             param.requires_grad = True
+        
+    #     if hasattr(self.text, 'attn_cross_pool') and self.text.attn_cross_pool is not None:
+    #         for param in self.text.attn_cross_pool.parameters():
+    #             param.requires_grad = True
+        
+    #     # 解冻token_mapping模块
+    #     if self.image_token_mapping is not None:
+    #         for param in self.image_token_mapping.parameters():
+    #             param.requires_grad = True
+        
+    #     if self.text_token_mapping is not None:
+    #         for param in self.text_token_mapping.parameters():
+    #             param.requires_grad = True
+        
+    #     # 解冻logit_scale和distill_logit_scale
+    #     if hasattr(self, 'logit_scale'):
+    #         self.logit_scale.requires_grad = True
+        
+    #     if hasattr(self, 'distill_logit_scale') and self.distill_logit_scale is not None:
+    #         self.distill_logit_scale.requires_grad = True
+        
+    #     # 打印可训练参数统计
+    #     total_params = sum(p.numel() for p in self.parameters())
+    #     trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+    #     print(f"总参数: {total_params:,}")
+    #     print(f"可训练参数: {trainable_params:,} ({trainable_params/total_params*100:.2f}%)")
+
     @torch.jit.ignore
     def set_grad_checkpointing(self, enable=True):
         self.visual.set_grad_checkpointing(enable)
         self.text.set_grad_checkpointing(enable)
 
     def encode_image(self, image, normalize: bool = False):
-        features = self.visual(image)
-        return F.normalize(features, dim=-1) if normalize else features
+        if self.output_all:
+            tokens, features = self.visual(image)
+            tokens = self.image_token_mapping(tokens)
+            output_dict = {'image_tokens': tokens}
+            output_dict['image_features'] = F.normalize(features, dim=-1) if normalize else features
+            return output_dict
+        else:
+            features = self.visual(image)
+            return {'image_features': F.normalize(features, dim=-1) if normalize else features}
 
     def encode_text(self, text, normalize: bool = False):
-        features = self.text(text)
-        return F.normalize(features, dim=-1) if normalize else features
+        if self.output_all:
+            features, tokens = self.text(text)
+            tokens = self.text_token_mapping(tokens)
+            output_dict = {'text_tokens': tokens}
+            output_dict['text_features'] = F.normalize(features, dim=-1) if normalize else features
+            return output_dict
+        else:
+            features = self.text(text)
+            return {'text_features': F.normalize(features, dim=-1) if normalize else features}
 
     def get_logits(self, image, text):
         image_features = self.encode_image(image, normalize=True)
         text_features = self.encode_text(text, normalize=True)
+        image_features = image_features['image_features']
+        text_features = text_features['text_features']
         image_logits = self.logit_scale.exp() * image_features @ text_features.T
         if self.logit_bias is not None:
             image_logits += self.logit_bias
@@ -502,20 +605,58 @@ class CustomTextCLIP(nn.Module):
             self,
             image: Optional[torch.Tensor] = None,
             text: Optional[torch.Tensor] = None,
+            batch_size: Optional[int] = None,
     ):
-        image_features = self.encode_image(
-            image, normalize=True) if image is not None else None
-        text_features = self.encode_text(
-            text, normalize=True) if text is not None else None
+        is_norm = True
+        if self.output_all and batch_size is not None:
+            is_norm = False
+
+        if isinstance(image, list):  # with Multicrop augmentation
+            image_features = MultiCropWrap(self.visual, image, normalize=is_norm,
+                                         image_token_mapping=self.image_token_mapping)
+        else:
+            image_features = self.encode_image(image, normalize=is_norm) if image is not None else None
+
+        text_features = self.encode_text(text, normalize=is_norm) if text is not None else None
+
+        if self.cosmos and batch_size is not None and self.output_all:
+            assert image is not None and text is not None
+            assert hasattr(self.visual, 'attn_cross_pool') and hasattr(self.text, 'attn_cross_pool')
+
+            img_tokens = image_features['image_tokens'][:batch_size]  # first global image
+            img_features = image_features['image_features']  # global images + local images
+            txt_tokens = text_features['text_tokens'][:batch_size]  # first global caption
+            txt_features = text_features['text_features']  # global captions + local captions
+
+            img_num = len(img_features) // batch_size
+            txt_num = len(txt_features) // batch_size
+
+            txt_pooled_tokens = self.text.attn_cross_pool(txt_tokens.repeat(img_num, 1, 1), img_features.unsqueeze(1))
+            img_crossmodal_features = img_features + txt_pooled_tokens.squeeze()
+            img_crossmodal_features = F.normalize(img_crossmodal_features, dim=-1)
+
+            img_pooled_tokens = self.visual.attn_cross_pool(img_tokens.repeat(txt_num, 1, 1), txt_features.unsqueeze(1))
+            txt_crossmodal_features = txt_features + img_pooled_tokens.squeeze()
+            txt_crossmodal_features = F.normalize(txt_crossmodal_features, dim=-1)
+
+            image_features['image_features'] = F.normalize(img_features, dim=-1)
+            text_features['text_features'] = F.normalize(txt_features, dim=-1)
 
         if self.output_dict:
             out_dict = {
-                "image_features": image_features,
-                "text_features": text_features,
+                "image_features": image_features['image_features'] if image is not None else None,
+                "text_features": text_features['text_features'] if text is not None else None,
                 "logit_scale": self.logit_scale.exp()
             }
+            if self.distill_logit_scale is not None:
+                out_dict['distill_logit_scale'] = self.distill_logit_scale.exp()
             if self.logit_bias is not None:
                 out_dict['logit_bias'] = self.logit_bias
+                
+            if self.cosmos and batch_size is not None and self.output_all:
+                out_dict['img_crossmodal_features'] = img_crossmodal_features
+                out_dict['txt_crossmodal_features'] = txt_crossmodal_features
+                
             return out_dict
 
         if self.logit_bias is not None:
