@@ -1,2 +1,1 @@
-from .vision_transformer import *
-from .vision_transformer_hybrid import *
+from .fastvit import *
