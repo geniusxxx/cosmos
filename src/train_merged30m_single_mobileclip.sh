@@ -12,6 +12,8 @@
     # --train-num-samples 80000 \
     # --train-data '/mnt/shared_38/data/xuboyu/datasets/DreamLIP28M/yfcc15m_recap_wds/train/yfcc15m-train-0000.tar' \
     # --train-num-samples 5000 \
+    # --train-data '/mnt/shared_38/data/xuboyu/datasets/DataCompDR-12M/train/{00000000..00000039}.tar::/mnt/shared_38/data/xuboyu/datasets/DreamLIP28M/yfcc15m_recap_wds/train/yfcc15m-train-{0000..0039}.tar::/mnt/shared_38/data/xuboyu/datasets/DreamLIP28M/cc12m_recap_wds/train/cc12m-train-{0000..0039}.tar::/mnt/shared_38/data/xuboyu/datasets/DreamLIP28M/cc3m_recap_wds/train/cc3m-train-{0000..0039}.tar' \
+    # --train-num-samples 1000000 \
 
 export WANDB_DIR="/home/xuboyu/Projects/CLIP/test_mobileclip/cosmos/output"
 
@@ -23,8 +25,8 @@ python -m main \
     --lr 2e-5 \
     --warmup 2000 \
     --epochs 3  \
-    --train-data '/mnt/shared_38/data/xuboyu/datasets/DataCompDR-12M/train/{00000000..00000039}.tar::/mnt/shared_38/data/xuboyu/datasets/DreamLIP28M/yfcc15m_recap_wds/train/yfcc15m-train-{0000..0039}.tar::/mnt/shared_38/data/xuboyu/datasets/DreamLIP28M/cc12m_recap_wds/train/cc12m-train-{0000..0039}.tar::/mnt/shared_38/data/xuboyu/datasets/DreamLIP28M/cc3m_recap_wds/train/cc3m-train-{0000..0039}.tar' \
-    --train-num-samples 1000000 \
+    --train-data '/mnt/shared_38/data/xuboyu/datasets/DreamLIP28M/yfcc15m_recap_wds/train/yfcc15m-train-0000.tar' \
+    --train-num-samples 5000 \
     --val-data 'coco' \
     --data-root-dir /mnt/shared_38/data/xuboyu/datasets \
     --batch-size 32 \

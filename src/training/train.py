@@ -873,15 +873,15 @@ def compute_retrieval(similarity_scores, txt2img, img2txt):
         i2t_ranks[index] = rank
 
     # Compute metrics
-    ir1 = len(torch.where(i2t_ranks < 1)[0]) / len(i2t_ranks)
-    ir5 = len(torch.where(i2t_ranks < 5)[0]) / len(i2t_ranks)
-    ir10 = len(torch.where(i2t_ranks < 10)[0]) / len(i2t_ranks)
+    ir1 = float(len(torch.where(i2t_ranks < 1)[0]) / len(i2t_ranks))
+    ir5 = float(len(torch.where(i2t_ranks < 5)[0]) / len(i2t_ranks))
+    ir10 = float(len(torch.where(i2t_ranks < 10)[0]) / len(i2t_ranks))
     i2t_report_dict = {
         "image_to_text_R@1": ir1,
         "image_to_text_R@5": ir5,
         "image_to_text_R@10": ir10,
-        "image_to_text_mean_rank": i2t_ranks.mean().item() + 1,
-        "image_to_text_median_rank": np.floor(np.median(i2t_ranks.numpy())) + 1
+        "image_to_text_mean_rank": float(i2t_ranks.mean().item() + 1),
+        "image_to_text_median_rank": float(np.floor(np.median(i2t_ranks.numpy())) + 1)
     }
 
     # compute text -> image
@@ -891,15 +891,15 @@ def compute_retrieval(similarity_scores, txt2img, img2txt):
         t2i_ranks[index] = torch.where(inds == txt2img[index])[0][0]
 
     # Compute metrics
-    tr1 = len(torch.where(t2i_ranks < 1)[0]) / len(t2i_ranks)
-    tr5 = len(torch.where(t2i_ranks < 5)[0]) / len(t2i_ranks)
-    tr10 = len(torch.where(t2i_ranks < 10)[0]) / len(t2i_ranks)
+    tr1 = float(len(torch.where(t2i_ranks < 1)[0]) / len(t2i_ranks))
+    tr5 = float(len(torch.where(t2i_ranks < 5)[0]) / len(t2i_ranks))
+    tr10 = float(len(torch.where(t2i_ranks < 10)[0]) / len(t2i_ranks))
     t2i_report_dict = {
         "text_to_image_R@1": tr1,
         "text_to_image_R@5": tr5,
         "text_to_image_R@10": tr10,
-        "text_to_image_mean_rank": t2i_ranks.mean().item() + 1,
-        "text_to_image_median_rank": np.floor(np.median(t2i_ranks.numpy())) + 1
+        "text_to_image_mean_rank": float(t2i_ranks.mean().item() + 1),
+        "text_to_image_median_rank": float(np.floor(np.median(t2i_ranks.numpy())) + 1)
     }
     metrics = {**t2i_report_dict, **i2t_report_dict}
 
