@@ -26,6 +26,19 @@ class ParseKwargs(argparse.Action):
 
 def parse_args(args):
     parser = argparse.ArgumentParser()
+    # 添加序列打包相关参数
+    parser.add_argument(
+        "--sequence-packing",
+        default=False,
+        action="store_true",
+        help="是否启用序列打包以加速训练"
+    )
+    parser.add_argument(
+        "--use-xformers",
+        default=False,
+        action="store_true",
+        help="是否使用xFormers提供的高效注意力实现"
+    )
     parser.add_argument(
         "--train-data",
         type=str,

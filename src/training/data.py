@@ -431,7 +431,6 @@ class ResampledShards2(IterableDataset):
             else:
                 yield dict(url=self.rng.choices(self.urls, weights=self.weights, k=1)[0])
 
-
 def get_wds_dataset(args, preprocess_img, is_train, epoch=0, floor=False, tokenizer=None, train_eval=False):
     if is_train:
         input_shards = args.train_data
@@ -512,11 +511,15 @@ def get_wds_dataset(args, preprocess_img, is_train, epoch=0, floor=False, tokeni
                 wds.select(filter_no_caption_or_no_image_json),
                 wds.decode("pilrgb", handler=log_and_continue),
                 wds.rename(image="jpg;png;jpeg;webp", text="json"),
-                wds.map_dict(image=preprocess_img, text=lambda text: sample_dict(text, k=args.num_sampled_captions, tokenizer=tokenizer, sampling_mode=args.caption_sampling_mode)),
+                wds.map_dict(image=preprocess_img, 
+                             text=lambda text: sample_dict(text, 
+                                                           k=args.num_sampled_captions, 
+                                                           tokenizer=tokenizer, 
+                                                           sampling_mode=args.caption_sampling_mode)),
                 wds.to_tuple("image", "text"),
                 wds.batched(args.batch_size, partial=not is_train)
             ])
-        else:
+        else:            
             pipeline.extend([
                 wds.select(filter_no_caption_or_no_image),
                 wds.decode("pilrgb", handler=log_and_continue),

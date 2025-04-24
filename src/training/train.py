@@ -18,6 +18,7 @@ from open_clip import get_input_dtype, CLIP, CustomTextCLIP
 from .distributed import is_master
 from .zero_shot import zero_shot_eval, zero_shot_classification_eval
 from .precision import get_autocast
+from open_clip.sequence_packing import HAS_XFORMERS
 
 from tqdm import tqdm
 
@@ -71,9 +72,30 @@ def train_one_epoch(student, teacher, data, loss, epoch, optimizer, scaler, sche
     autocast = get_autocast(args.precision)
     input_dtype = get_input_dtype(args.precision)
 
+    # 设置序列打包
+    if hasattr(args, 'sequence_packing'):
+        use_sequence_packing = args.sequence_packing and HAS_XFORMERS
+        if hasattr(student, 'use_sequence_packing'):
+            student.use_sequence_packing = use_sequence_packing
+            # 只在第一个epoch记录一次
+            if epoch == 0 and args.local_rank == 0:
+                if use_sequence_packing:
+                    logging.info("序列打包已启用，训练速度将提升")
+                else:
+                    if not HAS_XFORMERS:
+                        logging.warning("xFormers未安装，序列打包被禁用。安装xFormers以获得更快的训练速度。")
+                    else:
+                        logging.info("序列打包已禁用")
+
     student.train()
     if args.distill:
         dist_model.eval()
+
+    # 设置teacher为评估模式，但确保序列打包状态与student一致（如果支持）
+    teacher.eval()
+    if hasattr(teacher, 'use_sequence_packing') and hasattr(student, 'use_sequence_packing'):
+        teacher.use_sequence_packing = student.use_sequence_packing
+        teacher.inference_mode = False  # 特殊情况：teacher需要保持训练模式的序列打包行为
 
     # set epoch in process safe manner via sampler or shared_epoch
     data['train'].set_epoch(epoch)

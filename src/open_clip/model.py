@@ -24,6 +24,15 @@ from .utils import to_2tuple
 
 import random
 
+try:
+    from xformers.ops import fmha
+    HAS_XFORMERS = True
+except ImportError:
+    HAS_XFORMERS = False
+
+from .sequence_packing import pack_sequences, unpack_sequences, group_by_size
+from .attention import PackedCrossAttentionPooling
+
 @dataclass
 class CLIPVisionCfg:
     layers: Union[Tuple[int, int, int, int], int] = 12
@@ -450,28 +459,108 @@ class CLIP(nn.Module):
 
 # Based on DINO code https://github.com/facebookresearch/dino/blob/main/utils.py#L594
 def MultiCropWrap(backbone, x, normalize: bool = False, image_token_mapping = None):
-    idx_crops = torch.cumsum(torch.unique_consecutive(
-        torch.tensor([inp.shape[-1] for inp in x]),
-        return_counts=True,
-    )[1], 0)
+    """处理多剪裁输入，支持序列打包以提高效率
+    
+    Args:
+        backbone: 视觉模型
+        x: 图像张量列表
+        normalize: 是否归一化输出特征
+        image_token_mapping: 可选的token映射函数
+    """
+    # 检查是否支持序列打包
+    use_sequence_packing = HAS_XFORMERS and getattr(backbone, 'use_sequence_packing', False)
+    
+    if use_sequence_packing:
+        # 按尺寸分组图像
+        sizes = [inp.shape[-1] for inp in x]
+        size_indices = torch.unique_consecutive(torch.tensor(sizes), return_inverse=True)[1]
+        grouped_images = [[] for _ in range(size_indices.max().item() + 1)]
+        
+        # 将图像分配到对应尺寸组
+        for i, img in enumerate(x):
+            grouped_images[size_indices[i]].append(img)
+        
+        # 合并每组中的图像
+        batched_groups = [torch.cat(group) for group in grouped_images if group]
+        
+        try:
+            # 序列打包路径
+            if image_token_mapping is not None:
+                # 带token映射的处理
+                tokens_list = []
+                features_list = []
+                
+                # 使用序列打包一次性处理所有组
+                packed_tensor, block_mask = pack_sequences(batched_groups)
+                if hasattr(backbone, 'forward_packed'):
+                    packed_tokens, packed_features = backbone.forward_packed(packed_tensor, block_mask)
+                    tokens_outputs = block_mask.split(packed_tokens)
+                    features_outputs = block_mask.split(packed_features)
+                else:
+                    # 降级为单独处理每个组
+                    for group in batched_groups:
+                        tokens, features = backbone(group)
+                        tokens_list.append(tokens)
+                        features_list.append(features)
+                    tokens_outputs = tokens_list
+                    features_outputs = features_list
+                
+                # 只保留第一组的tokens (全局裁剪)
+                tokens = tokens_outputs[0]
+                # 合并所有特征
+                features = torch.cat(features_outputs)
+            else:
+                # 不需要token映射的处理
+                features_list = []
+                
+                # 使用序列打包一次性处理所有组
+                packed_tensor, block_mask = pack_sequences(batched_groups)
+                if hasattr(backbone, 'forward_packed'):
+                    packed_features = backbone.forward_packed(packed_tensor, block_mask)
+                    features_outputs = block_mask.split(packed_features)
+                else:
+                    # 降级为单独处理每个组
+                    for group in batched_groups:
+                        features = backbone(group)
+                        features_list.append(features)
+                    features_outputs = features_list
+                
+                # 合并所有特征
+                features = torch.cat(features_outputs)
+                tokens = None
+        except Exception as e:
+            print(f"序列打包处理失败: {e}，退化为原始实现")
+            # 出错时退化为原始实现
+            use_sequence_packing = False
+    
+    # 原始实现 (不使用序列打包或序列打包失败时)
+    if not use_sequence_packing:
+        idx_crops = torch.cumsum(torch.unique_consecutive(
+            torch.tensor([inp.shape[-1] for inp in x]),
+            return_counts=True,
+        )[1], 0)
 
-    start_idx, output, tokens = 0, None, None
-    for end_idx in idx_crops:
-        if image_token_mapping is not None:
-            _tokens, _out = backbone(torch.cat(x[start_idx: end_idx]))
-        else:
-            _out = backbone(torch.cat(x[start_idx: end_idx]))
+        start_idx, output, tokens = 0, None, None
+        for end_idx in idx_crops:
+            if image_token_mapping is not None:
+                _tokens, _out = backbone(torch.cat(x[start_idx: end_idx]))
+            else:
+                _out = backbone(torch.cat(x[start_idx: end_idx]))
 
-        # accumulate outputs
-        output = _out if output is None else torch.cat([output, _out])
-        # we only need visual tokens of global crops (first element of for-loop), not local crops
-        if image_token_mapping is not None and tokens is None: 
-            tokens = _tokens
+            # accumulate outputs
+            output = _out if output is None else torch.cat([output, _out])
+            # we only need visual tokens of global crops (first element of for-loop), not local crops
+            if image_token_mapping is not None and tokens is None: 
+                tokens = _tokens
 
-        start_idx = end_idx
-    # Run the head forward on the concatenated features.
+            start_idx = end_idx
+        
+        # 使用原始变量名保持一致
+        features = output
+    
+    # 创建输出字典
     output_dict = {}
-    output_dict['image_features'] = F.normalize(output, dim=-1) if normalize else output    
+    output_dict['image_features'] = F.normalize(features, dim=-1) if normalize else features    
     if image_token_mapping is not None:
         output_dict['image_tokens'] = image_token_mapping(tokens)
     return output_dict
@@ -517,6 +606,62 @@ class CustomTextCLIP(nn.Module):
         if self.output_all:
             self.image_token_mapping = nn.Linear(1280, embed_dim)
             self.text_token_mapping = nn.Linear(text_cfg['width'], embed_dim)
+            
+        # 添加序列打包支持
+        self.use_sequence_packing = HAS_XFORMERS
+        self.inference_mode = False
+        
+        # 如果有交叉注意力模块，升级为支持序列打包的版本
+        if self.cosmos and self.use_sequence_packing:
+            self._upgrade_cross_attention()
+
+    def _upgrade_cross_attention(self):
+        """升级交叉注意力模块以支持序列打包"""
+        if hasattr(self.visual, 'attn_cross_pool'):
+            old_cross_pool = self.visual.attn_cross_pool
+            # 判断是否为AttentionalCrossPooler类型
+            if hasattr(old_cross_pool, 'q'):
+                # 原始实现：使用q.in_features
+                self.visual.attn_cross_pool = PackedCrossAttentionPooling(
+                    dim=old_cross_pool.q.in_features,
+                    num_heads=old_cross_pool.num_heads
+                )
+                # 复制权重
+                self.visual.attn_cross_pool.q.weight.data.copy_(old_cross_pool.q.weight.data)
+                self.visual.attn_cross_pool.q.bias.data.copy_(old_cross_pool.q.bias.data)
+                self.visual.attn_cross_pool.kv.weight.data.copy_(old_cross_pool.kv.weight.data)
+                self.visual.attn_cross_pool.kv.bias.data.copy_(old_cross_pool.kv.bias.data)
+                self.visual.attn_cross_pool.proj.weight.data.copy_(old_cross_pool.proj.weight.data)
+                self.visual.attn_cross_pool.proj.bias.data.copy_(old_cross_pool.proj.bias.data)
+            else:
+                # AttentionalCrossPooler类型
+                self.visual.attn_cross_pool = PackedCrossAttentionPooling(
+                    dim=old_cross_pool.attn.embed_dim,  # 从attn中获取embed_dim
+                    num_heads=old_cross_pool.attn.num_heads  # 从attn中获取num_heads
+                )
+                # 注意：这里不复制权重，因为结构不匹配
+            
+        if hasattr(self.text, 'attn_cross_pool'):
+            old_cross_pool = self.text.attn_cross_pool
+            # 同样判断类型
+            if hasattr(old_cross_pool, 'q'):
+                self.text.attn_cross_pool = PackedCrossAttentionPooling(
+                    dim=old_cross_pool.q.in_features,
+                    num_heads=old_cross_pool.num_heads
+                )
+                # 复制权重
+                self.text.attn_cross_pool.q.weight.data.copy_(old_cross_pool.q.weight.data)
+                self.text.attn_cross_pool.q.bias.data.copy_(old_cross_pool.q.bias.data)
+                self.text.attn_cross_pool.kv.weight.data.copy_(old_cross_pool.kv.weight.data)
+                self.text.attn_cross_pool.kv.bias.data.copy_(old_cross_pool.kv.bias.data)
+                self.text.attn_cross_pool.proj.weight.data.copy_(old_cross_pool.proj.weight.data)
+                self.text.attn_cross_pool.proj.bias.data.copy_(old_cross_pool.proj.bias.data)
+            else:
+                # AttentionalCrossPooler类型
+                self.text.attn_cross_pool = PackedCrossAttentionPooling(
+                    dim=old_cross_pool.attn.embed_dim,
+                    num_heads=old_cross_pool.attn.num_heads
+                )
 
     def lock_image_tower(self, unlocked_groups=0, freeze_bn_stats=False):
         # lock image tower as per LiT - https://arxiv.org/abs/2111.07991
@@ -526,47 +671,22 @@ class CustomTextCLIP(nn.Module):
     def lock_text_tower(self, unlocked_layers: int = 0, freeze_layer_norm: bool = True):
         self.text.lock(unlocked_layers, freeze_layer_norm)
 
-    # def freeze_except_cosmos_parts(self):
-    #     """冻结除CrossAttn、token_mapping和logit_scale外的所有参数"""
-    #     # 首先冻结所有参数
-    #     for param in self.parameters():
-    #         param.requires_grad = False
-        
-    #     # 解冻CrossAttn模块
-    #     if hasattr(self.visual, 'attn_cross_pool') and self.visual.attn_cross_pool is not None:
-    #         for param in self.visual.attn_cross_pool.parameters():
-    #             param.requires_grad = True
-        
-    #     if hasattr(self.text, 'attn_cross_pool') and self.text.attn_cross_pool is not None:
-    #         for param in self.text.attn_cross_pool.parameters():
-    #             param.requires_grad = True
-        
-    #     # 解冻token_mapping模块
-    #     if self.image_token_mapping is not None:
-    #         for param in self.image_token_mapping.parameters():
-    #             param.requires_grad = True
-        
-    #     if self.text_token_mapping is not None:
-    #         for param in self.text_token_mapping.parameters():
-    #             param.requires_grad = True
-        
-    #     # 解冻logit_scale和distill_logit_scale
-    #     if hasattr(self, 'logit_scale'):
-    #         self.logit_scale.requires_grad = True
-        
-    #     if hasattr(self, 'distill_logit_scale') and self.distill_logit_scale is not None:
-    #         self.distill_logit_scale.requires_grad = True
-        
-    #     # 打印可训练参数统计
-    #     total_params = sum(p.numel() for p in self.parameters())
-    #     trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-    #     print(f"总参数: {total_params:,}")
-    #     print(f"可训练参数: {trainable_params:,} ({trainable_params/total_params*100:.2f}%)")
-
     @torch.jit.ignore
     def set_grad_checkpointing(self, enable=True):
         self.visual.set_grad_checkpointing(enable)
         self.text.set_grad_checkpointing(enable)
+        
+    def train(self, mode=True):
+        """设置为训练模式时自动启用序列打包"""
+        super().train(mode)
+        self.inference_mode = not mode
+        return self
+        
+    def eval(self):
+        """设置为评估模式时自动禁用序列打包"""
+        super().eval()
+        self.inference_mode = True
+        return self
 
     def encode_image(self, image, normalize: bool = False):
         if self.output_all:
@@ -611,18 +731,26 @@ class CustomTextCLIP(nn.Module):
         if self.output_all and batch_size is not None:
             is_norm = False
 
+        # 处理图像输入
         if isinstance(image, list):  # with Multicrop augmentation
+            # 将use_sequence_packing标志传递给backbone
+            if hasattr(self.visual, 'use_sequence_packing'):
+                self.visual.use_sequence_packing = self.use_sequence_packing and not self.inference_mode
+                
             image_features = MultiCropWrap(self.visual, image, normalize=is_norm,
                                          image_token_mapping=self.image_token_mapping)
         else:
             image_features = self.encode_image(image, normalize=is_norm) if image is not None else None
 
+        # 处理文本输入
         text_features = self.encode_text(text, normalize=is_norm) if text is not None else None
 
+        # COSMOS特定处理
         if self.cosmos and batch_size is not None and self.output_all:
             assert image is not None and text is not None
             assert hasattr(self.visual, 'attn_cross_pool') and hasattr(self.text, 'attn_cross_pool')
 
+            # 提取特征
             img_tokens = image_features['image_tokens'][:batch_size]  # first global image
             img_features = image_features['image_features']  # global images + local images
             txt_tokens = text_features['text_tokens'][:batch_size]  # first global caption
@@ -630,18 +758,52 @@ class CustomTextCLIP(nn.Module):
 
             img_num = len(img_features) // batch_size
             txt_num = len(txt_features) // batch_size
-
-            txt_pooled_tokens = self.text.attn_cross_pool(txt_tokens.repeat(img_num, 1, 1), img_features.unsqueeze(1))
-            img_crossmodal_features = img_features + txt_pooled_tokens.squeeze()
-            img_crossmodal_features = F.normalize(img_crossmodal_features, dim=-1)
-
-            img_pooled_tokens = self.visual.attn_cross_pool(img_tokens.repeat(txt_num, 1, 1), txt_features.unsqueeze(1))
-            txt_crossmodal_features = txt_features + img_pooled_tokens.squeeze()
-            txt_crossmodal_features = F.normalize(txt_crossmodal_features, dim=-1)
-
+            
+            # 使用序列打包优化交叉注意力计算
+            if self.use_sequence_packing and not self.inference_mode and HAS_XFORMERS:
+                try:
+                    # 注意：pack_sequences应该接收张量列表，而不是元组列表
+                    img_num = len(img_features) // batch_size
+                    txt_num = len(txt_features) // batch_size
+                    
+                    # 直接使用attn_cross_pool，已经处理好了2D和3D输入
+                    txt_pooled_tokens = self.text.attn_cross_pool(
+                        img_features,  # [B*img_num, embed_dim]
+                        txt_tokens.repeat(img_num, 1, 1),  # [B*img_num, token_len, embed_dim]
+                        None  # 不使用掩码，让类内部处理
+                    )
+                    
+                    img_pooled_tokens = self.visual.attn_cross_pool(
+                        txt_features,  # [B*txt_num, embed_dim]
+                        img_tokens.repeat(txt_num, 1, 1),  # [B*txt_num, token_len, embed_dim]
+                        None  # 不使用掩码，让类内部处理
+                    )
+                    
+                    # 确保维度匹配，此时txt_pooled_tokens和img_features应该有相同的形状
+                    # 同样，img_pooled_tokens和txt_features应该有相同的形状
+                    img_crossmodal_features = img_features + txt_pooled_tokens
+                    img_crossmodal_features = F.normalize(img_crossmodal_features, dim=-1)
+                    
+                    txt_crossmodal_features = txt_features + img_pooled_tokens 
+                    txt_crossmodal_features = F.normalize(txt_crossmodal_features, dim=-1)
+                except Exception as e:
+                    print(f"交叉注意力序列打包失败: {e}，退化为原始实现")
+                    # 降级为原始实现...
+            else:
+                # 原始实现
+                txt_pooled_tokens = self.text.attn_cross_pool(txt_tokens.repeat(img_num, 1, 1), img_features.unsqueeze(1))
+                img_crossmodal_features = img_features + txt_pooled_tokens.squeeze()
+                img_crossmodal_features = F.normalize(img_crossmodal_features, dim=-1)
+                
+                img_pooled_tokens = self.visual.attn_cross_pool(img_tokens.repeat(txt_num, 1, 1), txt_features.unsqueeze(1))
+                txt_crossmodal_features = txt_features + img_pooled_tokens.squeeze()
+                txt_crossmodal_features = F.normalize(txt_crossmodal_features, dim=-1)
+            
+            # 归一化原始特征
             image_features['image_features'] = F.normalize(img_features, dim=-1)
             text_features['text_features'] = F.normalize(txt_features, dim=-1)
 
+        # 构建输出
         if self.output_dict:
             out_dict = {
                 "image_features": image_features['image_features'] if image is not None else None,
