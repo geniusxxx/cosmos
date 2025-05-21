@@ -17,10 +17,11 @@ from src.open_clip import create_model_and_transforms, get_tokenizer
 #     pass
 
 class VisualEncoder:
-    def __init__(self, model, preprocess, reparam=True, model_arch=None, normalize=True):
+    def __init__(self, model, preprocess, reparam=True, model_arch=None, normalize=True, framework='openclip'):
         self.reparam = reparam
         self.model_arch = model_arch
         self.normalize = normalize  # 添加normalize参数
+        self.framework = framework  # 添加framework参数
         self.encoder = self._get_visual_encoder(model)
         self.encoder.eval()
         self.output_path = None
@@ -28,6 +29,22 @@ class VisualEncoder:
     
     def _get_visual_encoder(self, model):
         visual_encoder = model.visual
+        if self.framework == 'mobileclip':
+            if self.reparam:
+                if self.model_arch and 'repvit' in self.model_arch.lower():
+                    print("检测到RepVit模型，正在进行融合...")
+                    visual_encoder = self._fuse_model(visual_encoder)
+                    print("模型融合完成.")
+                    print("\n模型参数:")
+                    for name, module in visual_encoder.named_modules():
+                        if isinstance(module, nn.Conv2d):
+                            print(f"{name}: in={module.in_channels}, out={module.out_channels}, "
+                                f"kernel={module.kernel_size}, stride={module.stride}")
+                else:
+                    print("检测到FastVit模型，正在进行重参数化...")
+                    visual_encoder = self._reparameterize_model(visual_encoder)
+                    print("模型重参数化完成.")
+                    print(f"visual_encoder: {visual_encoder}")
 
         # 包装带手动L2归一化的编码器
         class NormalizedEncoder(nn.Module):
@@ -157,15 +174,20 @@ class VisualEncoder:
                 'image_features': {0: 'batch_size'}
             }
             
-        torch.onnx.export(**export_args)
-        
-        print(f"Visual Encoder has been exported to {self.output_path}")
+        try:
+            print(f"正在导出ONNX模型到 {self.output_path}...")
+            torch.onnx.export(**export_args)
+            print(f"导出完成!")
+        except Exception as e:
+            print(f"导出失败: {str(e)}")
+            return False
         
         # 使用onnxsim简化模型
-        print("\n使用onnxsim简化模型...")
-        import onnxsim
-        onnx_model = onnx.load(self.output_path)
         try:
+            print("\n使用onnxsim简化模型...")
+            import onnxsim
+            onnx_model = onnx.load(self.output_path)
+            
             # 简化模型
             model_simp, check = onnxsim.simplify(onnx_model)
             if check:
@@ -177,11 +199,14 @@ class VisualEncoder:
         except Exception as e:
             print(f"警告: 模型简化过程中出错: {str(e)}")
             print("将使用原始模型")
-            onnx.save(onnx_model, self.output_path)
+            try:
+                onnx.save(onnx_model, self.output_path)
+            except:
+                print("保存原始模型也失败，可能需要检查ONNX模型格式")
         
         # 验证ONNX模型
-        onnx_model = onnx.load(self.output_path)
         try:
+            onnx_model = onnx.load(self.output_path)
             onnx.checker.check_model(onnx_model, full_check=True)
             print("Visual encoder ONNX model is valid.")
             
@@ -200,75 +225,116 @@ class VisualEncoder:
             print(f"Error: {e}")
             return False
 
+    @staticmethod
+    def _reparameterize_model(model: nn.Module) -> nn.Module:
+        model = copy.deepcopy(model)
+        for module in model.modules():
+            if hasattr(module, "reparameterize"):
+                module.reparameterize()
+        return model
+        
+    @staticmethod
+    def _fuse_model(model: nn.Module) -> nn.Module:
+        """reparameterize model for repvit."""
+        model = copy.deepcopy(model)
+        for module in model.modules():
+            if hasattr(module, "fuse"):
+                module.fuse()
+        return model
+
 class TextEncoder:
-    def __init__(self, model, tokenizer, normalize=True):
+    def __init__(self, model, tokenizer, normalize=True, framework='openclip'):
         self.normalize = normalize  # 添加normalize参数
+        self.framework = framework  # 添加framework参数
         self.encoder = self._get_text_encoder(model)
         self.encoder.eval()
         self.output_path = None
         self.tokenizer = tokenizer  # 保存tokenizer
     
     def _get_text_encoder(self, model):
-        # 创建一个完整的文本编码器，包含所有必要的组件
-        class CustomTextEncoder(nn.Module):
-            def __init__(self, clip_model, normalize):
-                super().__init__()
-                # 提取CLIP模型中的文本相关组件
-                self.token_embedding = clip_model.token_embedding
-                self.positional_embedding = clip_model.positional_embedding
-                self.transformer = clip_model.transformer
-                self.ln_final = clip_model.ln_final
-                self.text_projection = clip_model.text_projection
-                self.register_buffer('attn_mask', clip_model.attn_mask)
-                self.text_pool_type = getattr(clip_model, 'text_pool_type', 'argmax')
-                self.normalize = normalize
-                # 检查是否需要返回token级特征
-                self.output_all = getattr(clip_model, 'output_all', False)
-                self.text_token_mapping = getattr(clip_model, 'text_token_mapping', None)
+        # 根据框架类型选择文本编码器的获取方式
+        if self.framework == 'mobileclip':
+            text_encoder = model.text
+            
+            class MobileClipTextEncoder(nn.Module):
+                def __init__(self, encoder, normalize):
+                    super().__init__()
+                    self.encoder = encoder
+                    self.normalize = normalize
+                    
+                def forward(self, text):
+                    features, _= self.encoder(text)
+                    if self.normalize:
+                        # 手动实现L2归一化
+                        square = features * features  # Mul 操作
+                        sum_square = torch.sum(square, dim=-1, keepdim=True)  # ReduceSum 操作
+                        sqrt = torch.sqrt(sum_square)  # Sqrt 操作
+                        features = features / sqrt  # Div 操作
+                    return features
+            
+            return MobileClipTextEncoder(text_encoder, self.normalize)
+        
+        else:
+            # 创建一个完整的文本编码器，包含所有必要的组件
+            class CustomTextEncoder(nn.Module):
+                def __init__(self, clip_model, normalize):
+                    super().__init__()
+                    # 提取CLIP模型中的文本相关组件
+                    self.token_embedding = clip_model.token_embedding
+                    self.positional_embedding = clip_model.positional_embedding
+                    self.transformer = clip_model.transformer
+                    self.ln_final = clip_model.ln_final
+                    self.text_projection = clip_model.text_projection
+                    self.register_buffer('attn_mask', clip_model.attn_mask)
+                    self.text_pool_type = getattr(clip_model, 'text_pool_type', 'argmax')
+                    self.normalize = normalize
+                    # 检查是否需要返回token级特征
+                    self.output_all = getattr(clip_model, 'output_all', False)
+                    self.text_token_mapping = getattr(clip_model, 'text_token_mapping', None)
 
-            def forward(self, text):
-                # 获取数据类型
-                cast_dtype = self.transformer.get_cast_dtype()
-                
-                # 确保输入是正确的整型
-                if text.dtype != torch.int32 and text.dtype != torch.int64:
-                    text = text.to(torch.int32)
-                
-                # 1. 词嵌入
-                x = self.token_embedding(text).to(cast_dtype)  # [batch_size, n_ctx, d_model]
-                
-                # 2. 位置编码
-                x = x + self.positional_embedding.to(cast_dtype)
-                
-                # 3. Transformer处理
-                x = self.transformer(x, attn_mask=self.attn_mask)
-                
-                # 4. 最终层归一化
-                x = self.ln_final(x)  # [batch_size, n_ctx, transformer.width]
-                
-                # 5. 全局池化
-                from src.open_clip.transformer import text_global_pool
-                pooled, tokens = text_global_pool(x, text, self.text_pool_type)
-                
-                # 6. 应用投影（如果有）
-                if self.text_projection is not None:
-                    if isinstance(self.text_projection, nn.Linear):
-                        pooled = self.text_projection(pooled)
-                    else:
-                        pooled = pooled @ self.text_projection
-                
-                # 7. 应用归一化（如果需要）
-                if self.normalize:
-                    # 手动实现L2归一化
-                    square = pooled * pooled  # Mul 操作
-                    sum_square = torch.sum(square, dim=-1, keepdim=True)  # ReduceSum 操作
-                    sqrt = torch.sqrt(sum_square)  # Sqrt 操作
-                    pooled = pooled / sqrt  # Div 操作
-                
-                return pooled
+                def forward(self, text):
+                    # 获取数据类型
+                    cast_dtype = self.transformer.get_cast_dtype()
+                    
+                    # 确保输入是正确的整型
+                    if text.dtype != torch.int32 and text.dtype != torch.int64:
+                        text = text.to(torch.int32)
+                    
+                    # 1. 词嵌入
+                    x = self.token_embedding(text).to(cast_dtype)  # [batch_size, n_ctx, d_model]
+                    
+                    # 2. 位置编码
+                    x = x + self.positional_embedding.to(cast_dtype)
+                    
+                    # 3. Transformer处理
+                    x = self.transformer(x, attn_mask=self.attn_mask)
+                    
+                    # 4. 最终层归一化
+                    x = self.ln_final(x)  # [batch_size, n_ctx, transformer.width]
+                    
+                    # 5. 全局池化
+                    from src.open_clip.transformer import text_global_pool
+                    pooled, tokens = text_global_pool(x, text, self.text_pool_type)
+                    
+                    # 6. 应用投影（如果有）
+                    if self.text_projection is not None:
+                        if isinstance(self.text_projection, nn.Linear):
+                            pooled = self.text_projection(pooled)
+                        else:
+                            pooled = pooled @ self.text_projection
+                    
+                    # 7. 应用归一化（如果需要）
+                    if self.normalize:
+                        # 手动实现L2归一化
+                        square = pooled * pooled  # Mul 操作
+                        sum_square = torch.sum(square, dim=-1, keepdim=True)  # ReduceSum 操作
+                        sqrt = torch.sqrt(sum_square)  # Sqrt 操作
+                        pooled = pooled / sqrt  # Div 操作
+                    
+                    return pooled
 
-        # 返回自定义文本编码器
-        return CustomTextEncoder(model, self.normalize)
+            # 返回自定义文本编码器
+            return CustomTextEncoder(model, self.normalize)
     
     def verify_outputs(self, test_texts):
         """验证PyTorch和ONNX输出是否一致"""
@@ -435,6 +501,9 @@ class TextEncoder:
 
 def parsers(args):
     parser = argparse.ArgumentParser(description='Export CLIP model to ONNX')
+    parser.add_argument('--framework', type=str, default='openclip',
+                      choices=['openclip', 'mobileclip'],
+                      help='Framework to use: openclip or mobileclip')
     parser.add_argument('--model-path', type=str, default=None)
     parser.add_argument('--model-arch', type=str, default=None)
     parser.add_argument('--verbose-onnx', action='store_true')
@@ -527,7 +596,8 @@ def main(args):
             preprocess=preprocess_val, 
             reparam=args.reparam, 
             model_arch=args.model_arch,
-            normalize=args.normalize
+            normalize=args.normalize,
+            framework=args.framework
         )
         visual_result = visual_encoder.export_onnx(
             output_path=args.output_path,
@@ -546,7 +616,8 @@ def main(args):
         text_encoder = TextEncoder(
             model=model,
             tokenizer=tokenizer,
-            normalize=args.normalize
+            normalize=args.normalize,
+            framework=args.framework
         )
         text_result = text_encoder.export_onnx(
             output_path=args.output_path,

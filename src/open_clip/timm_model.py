@@ -113,8 +113,8 @@ class TimmModel(nn.Module):
             head_layers['mlp'] = Mlp(prev_chs, 2 * embed_dim, embed_dim, drop=(drop, 0), bias=(True, proj_bias))
 
         self.head = nn.Sequential(head_layers)
-        if hasattr(self.trunk, 'attn_cross_pool'):
-            self.attn_cross_pool = self.trunk.attn_cross_pool
+        # if hasattr(self.trunk, 'attn_cross_pool'):
+        #     self.attn_cross_pool = self.trunk.attn_cross_pool
 
     def lock(self, unlocked_groups=0, freeze_bn_stats=False):
         """ lock modules

@@ -515,7 +515,8 @@ class CustomTextCLIP(nn.Module):
         self.output_all = vision_cfg['output_all']
         assert vision_cfg['output_all'] == text_cfg['output_all']
         if self.output_all:
-            self.image_token_mapping = nn.Linear(1280, embed_dim)
+            #tag: mobileclip-s2 1280 mobileclip-s0/s1 1024
+            self.image_token_mapping = nn.Linear(1024, embed_dim)
             self.text_token_mapping = nn.Linear(text_cfg['width'], embed_dim)
 
     def lock_image_tower(self, unlocked_groups=0, freeze_bn_stats=False):
@@ -621,7 +622,7 @@ class CustomTextCLIP(nn.Module):
 
         if self.cosmos and batch_size is not None and self.output_all:
             assert image is not None and text is not None
-            assert hasattr(self.visual, 'attn_cross_pool') and hasattr(self.text, 'attn_cross_pool')
+            assert hasattr(self.visual.trunk, 'attn_cross_pool') and hasattr(self.text, 'attn_cross_pool')
 
             img_tokens = image_features['image_tokens'][:batch_size]  # first global image
             img_features = image_features['image_features']  # global images + local images
@@ -635,7 +636,7 @@ class CustomTextCLIP(nn.Module):
             img_crossmodal_features = img_features + txt_pooled_tokens.squeeze()
             img_crossmodal_features = F.normalize(img_crossmodal_features, dim=-1)
 
-            img_pooled_tokens = self.visual.attn_cross_pool(img_tokens.repeat(txt_num, 1, 1), txt_features.unsqueeze(1))
+            img_pooled_tokens = self.visual.trunk.attn_cross_pool(img_tokens.repeat(txt_num, 1, 1), txt_features.unsqueeze(1))
             txt_crossmodal_features = txt_features + img_pooled_tokens.squeeze()
             txt_crossmodal_features = F.normalize(txt_crossmodal_features, dim=-1)
 
