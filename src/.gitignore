@@ -5,3 +5,5 @@ logs/
 pretrained/
 
 *.sh
+
+wandb/
