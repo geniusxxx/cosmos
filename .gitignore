@@ -2,7 +2,7 @@ output/
 
 assets/
 
-_pycache_/
+__pycache__/
 
 inference.py
 
@@ -11,6 +11,3 @@ run_pytorch_to_onnx.sh
 zeroshot_test.sh
 
 minimal_example.py
-
-custom_timm/__pycache__/
-custom_timm/models/__pycache__
