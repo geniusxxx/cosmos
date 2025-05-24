@@ -1,7 +1,5 @@
-output/
-
-assets/
-
 __pycache__/
 
 *.sh
+
+wandb/
