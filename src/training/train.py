@@ -90,14 +90,21 @@ def train_one_epoch(student, teacher, data, loss, epoch, optimizer, scaler, sche
     losses_m = {}
     batch_time_m = AverageMeter()
     data_time_m = AverageMeter()
+    loading_time_m = AverageMeter()
+    preprocessing_time_m = AverageMeter()
     end = time.time()
     for i, batch in enumerate(dataloader):
+        loading_end = time.time()
+        loading_time_m.update(loading_end - end)
+        
         i_accum = i // args.accum_freq
         step = num_batches_per_epoch * epoch + i_accum
 
         if not args.skip_scheduler:
             scheduler(step)
 
+        preprocessing_start = time.time()
+        
         images, texts = batch
 
         if use_img_aug:
@@ -126,6 +133,9 @@ def train_one_epoch(student, teacher, data, loss, epoch, optimizer, scaler, sche
             texts = texts.permute(1, 0, 2).reshape(-1, texts.shape[-1])  
             num_texts = args.num_sampled_captions   
         texts = texts.to(device=device, non_blocking=True)
+
+        preprocessing_end = time.time()
+        preprocessing_time_m.update(preprocessing_end - preprocessing_start)
 
         data_time_m.update(time.time() - end)
         optimizer.zero_grad()
@@ -261,7 +271,7 @@ def train_one_epoch(student, teacher, data, loss, epoch, optimizer, scaler, sche
             if distill_logit_scale is not None:
                 logging.info(
                     f"Train Epoch: {epoch} [{num_samples:>{sample_digits}}/{samples_per_epoch} ({percent_complete:.0f}%)] "
-                    f"Data (t): {data_time_m.avg:.3f} "
+                    f"Data (t): {data_time_m.avg:.3f} [Loading: {loading_time_m.avg:.3f}, Preprocessing: {preprocessing_time_m.avg:.3f}] "
                     f"Batch (t): {batch_time_m.avg:.3f}, {samples_per_second:#g}/s, {samples_per_second_per_gpu:#g}/s/gpu "
                     f"LR: {optimizer.param_groups[0]['lr']:5f} "
                     f"Momentum: {momentum:5f} "
@@ -271,7 +281,7 @@ def train_one_epoch(student, teacher, data, loss, epoch, optimizer, scaler, sche
             else:
                 logging.info(
                     f"Train Epoch: {epoch} [{num_samples:>{sample_digits}}/{samples_per_epoch} ({percent_complete:.0f}%)] "
-                    f"Data (t): {data_time_m.avg:.3f} "
+                    f"Data (t): {data_time_m.avg:.3f} [Loading: {loading_time_m.avg:.3f}, Preprocessing: {preprocessing_time_m.avg:.3f}] "
                     f"Batch (t): {batch_time_m.avg:.3f}, {samples_per_second:#g}/s, {samples_per_second_per_gpu:#g}/s/gpu "
                     f"LR: {optimizer.param_groups[0]['lr']:5f} "
                     f"Momentum: {momentum:5f} "
@@ -280,6 +290,8 @@ def train_one_epoch(student, teacher, data, loss, epoch, optimizer, scaler, sche
             # Save train loss / etc. Using non avg meter values as loggers have their own smoothing
             log_data = {
                 "data_time": data_time_m.val,
+                "loading_time": loading_time_m.val,
+                "preprocessing_time": preprocessing_time_m.val,
                 "batch_time": batch_time_m.val,
                 "samples_per_second": samples_per_second,
                 "samples_per_second_per_gpu": samples_per_second_per_gpu,
@@ -305,6 +317,8 @@ def train_one_epoch(student, teacher, data, loss, epoch, optimizer, scaler, sche
             # resetting batch / data time meters per log window
             batch_time_m.reset()
             data_time_m.reset()
+            loading_time_m.reset()
+            preprocessing_time_m.reset()
     # end for
 
 
