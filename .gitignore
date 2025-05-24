@@ -11,3 +11,6 @@ run_pytorch_to_onnx.sh
 zeroshot_test.sh
 
 minimal_example.py
+
+custom_timm/__pycache__/
+custom_timm/models/__pycache__
