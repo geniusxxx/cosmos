@@ -6,8 +6,8 @@ __pycache__/
 
 inference.py
 
-run_pytorch_to_onnx.sh
-
-zeroshot_test.sh
+*.sh
 
 minimal_example.py
+
+.vscode/
