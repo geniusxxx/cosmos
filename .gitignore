@@ -11,3 +11,9 @@ inference.py
 minimal_example.py
 
 .vscode/
+
+extracted_weights.py
+
+extract_weights.sh
+
+test_extract.py
