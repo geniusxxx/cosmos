@@ -1117,7 +1117,7 @@ class FastVitStage(nn.Module):
         x = self.downsample(x)
         x = self.pos_emb(x)
         if self.grad_checkpointing and not torch.jit.is_scripting():
-            x = checkpoint_seq(self.blocks, x)
+            x = checkpoint_seq(self.blocks, x, use_reentrant=False)
         else:
             x = self.blocks(x)
         return x

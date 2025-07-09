@@ -462,6 +462,10 @@ def train_one_epoch(student, teacher, data, loss, epoch, optimizer, scaler, sche
             # resetting batch / data time meters per log window
             batch_time_m.reset()
             data_time_m.reset()
+            
+            # 定期清理GPU内存缓存，减少COSMOS训练中的内存累积
+            if step % args.log_every_n_steps == 0:
+                torch.cuda.empty_cache()
     # end for
 
 

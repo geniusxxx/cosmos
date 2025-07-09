@@ -533,7 +533,7 @@ def main(args):
     test_texts = None
     if args.verify:
         from PIL import Image
-        test_image = Image.open("/home/xuboyu/Projects/CLIP/test_mobileclip/ml-mobileclip/assets/CLIP.png").convert('RGB')
+        test_image = Image.open("/home/xuboyu/Projects/cosmos/assets/framework.png").convert('RGB')
         test_texts = ["a diagram", "a dog", "a cat"]
 
     # Load model and transforms

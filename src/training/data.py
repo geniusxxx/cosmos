@@ -245,8 +245,8 @@ def sample_dict(text, k=3, tokenizer=None, sampling_mode='random'):
             captions_list = text['raw_text'] + text['syn_text']
         else:
             captions_list = text['raw_caption'] + \
-                                text['shortIB_captions'] + text['shortSV_captions'] + text['shortLLA_captions'] + \
-                                text['longIB_captions'] + text['longSV_captions'] + text['longLLA_captions']
+                            text['shortIB_captions'] + text['shortSV_captions'] + text['shortLLA_captions'] + \
+                            text['longIB_captions'] + text['longSV_captions'] + text['longLLA_captions']
         global_nums = [random.randint(1, 5) for _ in range(2) ] # choose the number of sentences (1~5) for 2 global captions
         global_captions = ['. '.join(random_sample_from_list(captions_list, num)) for num in global_nums]
         local_captions = random_sample_from_list(captions_list, k-2)
@@ -561,7 +561,7 @@ def get_wds_dataset(args, preprocess_img, is_train, epoch=0, floor=False, tokeni
         batch_size=None,
         shuffle=False,
         num_workers=args.workers,
-        persistent_workers=args.workers > 0,
+        persistent_workers=False,
     )
 
     # FIXME not clear which approach is better, with_epoch before vs after dataloader?

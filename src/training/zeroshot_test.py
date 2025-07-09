@@ -22,6 +22,7 @@ import onnxruntime as ort
 import numpy as np
 import torch.nn.functional as F
 import json
+from src.open_clip import create_model_and_transforms, get_tokenizer   
 
 # import debugpy
 # try:
@@ -95,15 +96,15 @@ class ONNXModelWrapper(nn.Module):
         self.batch_size = batch_size
         
         # 初始化预处理和tokenizer
-        _, _, self.preprocess = open_clip.create_model_and_transforms(
+        _, _, self.preprocess = create_model_and_transforms(
             model_name=model_arch,
             pretrained=False,
-            # image_mean=(0, 0, 0),
-            # image_std=(1, 1, 1),
-            # image_interpolation="bilinear",
+            image_mean=(0, 0, 0),
+            image_std=(1, 1, 1),
+            image_interpolation="bilinear",
             force_image_size=(resolution, resolution)
         )
-        self.tokenizer = open_clip.get_tokenizer(model_arch)
+        self.tokenizer = get_tokenizer(model_arch)
         
         # ONNX Runtime基础配置
         sess_options = ort.SessionOptions()
@@ -243,7 +244,7 @@ class SplitTextEncoder(nn.Module):
         super().__init__()
         self.model_arch = model_arch
         self.batch_size = batch_size
-        self.tokenizer = open_clip.get_tokenizer(model_arch)
+        self.tokenizer = get_tokenizer(model_arch)
         
         # ONNX Runtime配置
         sess_options = ort.SessionOptions()
@@ -437,7 +438,7 @@ def create_model(model_arch, model_path, resolution=256, batch_size=64):
             if 'px-ntk-pruning' in model_path_str:
                 print("使用px-ntk-pruning方法...")
                 # 创建基础模型
-                model, _, transform = open_clip.create_model_and_transforms(
+                model, _, transform = create_model_and_transforms(
                     model_name=model_arch,
                     pretrained=None,
                     # image_mean=(0, 0, 0),
@@ -477,7 +478,7 @@ def create_model(model_arch, model_path, resolution=256, batch_size=64):
             else:
                 print("使用其他pruning方法...")
                 # 创建基础模型
-                model, _, transform = open_clip.create_model_and_transforms(
+                model, _, transform = create_model_and_transforms(
                     model_name=model_arch,
                     pretrained=None,  # 不加载预训练权重
                     # image_mean=(0, 0, 0),
@@ -797,7 +798,46 @@ def create_model(model_arch, model_path, resolution=256, batch_size=64):
                 print(f"详细错误信息: {traceback.format_exc()}")
                 raise e
                 
-        # 5. 原始模型判断
+        # # 5. 检测提取的权重文件
+        # elif 'extracted_weights' in model_path_str or (hasattr(checkpoint, 'get') and checkpoint.get('extraction_info')):
+        #     print("\n检测到提取的权重文件...")
+            
+        #     # 检查是否有extraction_info
+        #     if 'extraction_info' in checkpoint:
+        #         extraction_info = checkpoint['extraction_info']
+        #         print(f"提取信息: {extraction_info}")
+        #         extracted_model_type = extraction_info.get('model_type', 'mobileclip')
+        #         extracted_from = extraction_info.get('extracted_from', 'teacher')
+        #         print(f"模型类型: {extracted_model_type}, 提取自: {extracted_from}")
+            
+        #     # 创建标准的MobileCLIP模型（不使用cosmos=True）
+        #     print("创建标准MobileCLIP模型...")
+        #     model, _, transform = open_clip.create_model_and_transforms(
+        #         model_name=model_arch,
+        #         pretrained=None,  # 不加载预训练权重
+        #         image_mean=(0, 0, 0),
+        #         image_std=(1, 1, 1), 
+        #         image_interpolation="bilinear",
+        #         force_image_size=(resolution, resolution)
+        #     )
+            
+        #     # 加载提取的权重
+        #     try:
+        #         state_dict = checkpoint['state_dict']
+        #         missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+                
+        #         if missing_keys:
+        #             print(f"缺失的键: {missing_keys}")
+        #         if unexpected_keys:
+        #             print(f"意外的键: {unexpected_keys}")
+                    
+        #         print("提取的权重文件加载成功")
+                
+        #     except Exception as e:
+        #         print(f"警告: 提取的权重文件加载失败: {str(e)}")
+        #         raise e
+        
+        # 6. 原始模型判断  
         elif 'checkpoints' in model_path_str:
             if 'siglip' in str(model_arch).lower():
                 print("\n加载SigLIP原始模型...")
@@ -829,7 +869,7 @@ def create_model(model_arch, model_path, resolution=256, batch_size=64):
                 print("\n加载原始MobileCLIP模型...")
                 model_path = model_path[0] if isinstance(model_path, (list, tuple)) else model_path
                 print(f"模型路径: {model_path}")
-                model, _, transform = flair.create_model_and_transforms(
+                model, _, transform = open_clip.create_model_and_transforms(
                     model_arch,
                     pretrained=model_path,
                     image_mean=(0, 0, 0),
@@ -907,7 +947,7 @@ def evaluate_classification_webdataset(
     metrics = zsc.evaluate(
         model,
         dataloader,
-        open_clip.get_tokenizer(model_arch),
+        get_tokenizer(model_arch),
         classnames,
         zeroshot_templates,
         device,
@@ -955,7 +995,7 @@ def evaluate_retrieval_webdataset(
     metrics = zsr.evaluate(
         model,
         dataloader,
-        open_clip.get_tokenizer(model_arch),
+        get_tokenizer(model_arch),
         recall_k_list=[1, 5, 10, 20],
         device=device,
         amp=False

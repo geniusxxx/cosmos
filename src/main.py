@@ -13,6 +13,14 @@ import torch
 from torch import optim
 from torch.cuda.amp import GradScaler
 from huggingface_hub import hf_hub_download
+import torch.multiprocessing as mp
+
+# Set PyTorch multiprocessing sharing strategy
+try:
+    mp.set_sharing_strategy('file_system')
+except RuntimeError:
+    # This may mean it's already set or not supported, allow program to continue
+    pass
 
 try:
     import wandb
@@ -50,7 +58,6 @@ import warnings
 #     pass
 
 LATEST_CHECKPOINT_NAME = "epoch_latest.pt"
-
 
 def random_seed(seed=42, rank=0):
     torch.manual_seed(seed + rank)
@@ -556,6 +563,9 @@ def main(args):
     original_teacher = teacher
     if args.torchcompile:
         logging.info('Compiling model...')
+        torch._dynamo.config.optimize_ddp = "python_reducer"
+        torch._dynamo.config.suppress_errors = True
+        # torch._dynamo.config.compiled_autograd = True
         student = torch.compile(original_student)
         teacher = torch.compile(original_teacher)
 
