@@ -12,7 +12,7 @@ minimal_example.py
 
 .vscode/
 
-extracted_weights.py
+extract_weights.py
 
 extract_weights.sh
 
